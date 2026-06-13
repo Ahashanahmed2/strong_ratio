@@ -1,86 +1,432 @@
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pymongo import MongoClient
 from datetime import datetime
 import os
+import json
 from dotenv import load_dotenv
 import threading
 import time
 import requests
 from contextlib import asynccontextmanager
+import base64
+from io import BytesIO
 
 load_dotenv()
 
-# MongoDB Configuration
+# =========================================================
+# CONFIGURATION
+# =========================================================
 MONGODB_URI = os.environ.get("MONGODBEMAIL_URI", "")
 DATABASE_NAME = "swing_trading_db"
 COLLECTION_NAME = "strong_ratio_signals"
 
-# HTML Template with CSS and JavaScript
-HTML_TEMPLATE = """
-<!DOCTYPE html>
+# Create static directory
+os.makedirs("static", exist_ok=True)
+
+# =========================================================
+# CREATE STATIC FILES
+# =========================================================
+
+# 1. manifest.json
+MANIFEST_JSON = {
+    "name": "Strong Ratio Signals Dashboard",
+    "short_name": "Strong Ratio",
+    "description": "Real-time MongoDB dashboard for strong ratio signals",
+    "start_url": "/",
+    "display": "standalone",
+    "theme_color": "#667eea",
+    "background_color": "#ffffff",
+    "orientation": "portrait-primary",
+    "scope": "/",
+    "lang": "en",
+    "icons": [
+        {
+            "src": "/static/icon-192x192.png",
+            "sizes": "192x192",
+            "type": "image/png",
+            "purpose": "any maskable"
+        },
+        {
+            "src": "/static/icon-512x512.png",
+            "sizes": "512x512",
+            "type": "image/png",
+            "purpose": "any maskable"
+        }
+    ],
+    "shortcuts": [
+        {
+            "name": "Dashboard",
+            "short_name": "Home",
+            "description": "View main dashboard",
+            "url": "/",
+            "icons": [{"src": "/static/icon-192x192.png", "sizes": "192x192"}]
+        },
+        {
+            "name": "Statistics",
+            "short_name": "Stats",
+            "description": "View statistics",
+            "url": "/api/stats",
+            "icons": [{"src": "/static/icon-192x192.png", "sizes": "192x192"}]
+        }
+    ]
+}
+
+# 2. Service Worker (sw.js)
+SERVICE_WORKER_JS = '''// Strong Ratio Dashboard Service Worker
+const CACHE_NAME = 'strong-ratio-v1.0.0';
+const STATIC_ASSETS = [
+    '/',
+    '/static/offline.html',
+    'https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css',
+    'https://cdn.datatables.net/1.13.4/css/dataTables.bootstrap5.min.css',
+    'https://cdn.jsdelivr.net/npm/sweetalert2@11/dist/sweetalert2.min.css',
+    'https://code.jquery.com/jquery-3.6.0.min.js',
+    'https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js',
+    'https://cdn.datatables.net/1.13.4/js/jquery.dataTables.min.js',
+    'https://cdn.datatables.net/1.13.4/js/dataTables.bootstrap5.min.js',
+    'https://cdn.jsdelivr.net/npm/sweetalert2@11'
+];
+
+self.addEventListener('install', event => {
+    console.log('[SW] Installing...');
+    event.waitUntil(
+        caches.open(CACHE_NAME).then(cache => {
+            console.log('[SW] Caching static assets');
+            return cache.addAll(STATIC_ASSETS);
+        }).then(() => self.skipWaiting())
+    );
+});
+
+self.addEventListener('activate', event => {
+    console.log('[SW] Activating...');
+    event.waitUntil(
+        caches.keys().then(keys => {
+            return Promise.all(keys.map(key => {
+                if (key !== CACHE_NAME) {
+                    console.log('[SW] Deleting old cache:', key);
+                    return caches.delete(key);
+                }
+            }));
+        }).then(() => self.clients.claim())
+    );
+});
+
+self.addEventListener('fetch', event => {
+    const url = new URL(event.request.url);
+    
+    if (event.request.method !== 'GET') {
+        event.respondWith(fetch(event.request));
+        return;
+    }
+    
+    if (url.pathname.startsWith('/api/')) {
+        event.respondWith(
+            fetch(event.request).catch(() => {
+                return new Response(JSON.stringify({error: 'Offline - API unavailable'}), {
+                    headers: {'Content-Type': 'application/json'}
+                });
+            })
+        );
+        return;
+    }
+    
+    event.respondWith(
+        caches.match(event.request).then(cached => {
+            return cached || fetch(event.request).then(response => {
+                const responseToCache = response.clone();
+                caches.open(CACHE_NAME).then(cache => {
+                    cache.put(event.request, responseToCache);
+                });
+                return response;
+            });
+        }).catch(() => {
+            if (url.pathname === '/' || url.pathname === '/index.html') {
+                return caches.match('/static/offline.html');
+            }
+            return new Response('Offline - Page not cached', {status: 404});
+        })
+    );
+});
+
+self.addEventListener('push', event => {
+    const data = event.data ? event.data.json() : {title: 'Strong Ratio', body: 'Data updated!'};
+    event.waitUntil(
+        self.registration.showNotification(data.title, {
+            body: data.body,
+            icon: '/static/icon-192x192.png',
+            badge: '/static/icon-192x192.png',
+            vibrate: [200, 100, 200],
+            actions: [{action: 'open', title: 'Open Dashboard'}]
+        })
+    );
+});
+
+self.addEventListener('notificationclick', event => {
+    event.notification.close();
+    if (event.action === 'open') {
+        event.waitUntil(clients.openWindow('/'));
+    } else {
+        event.waitUntil(clients.openWindow('/'));
+    }
+});
+'''
+
+# 3. Offline HTML
+OFFLINE_HTML = '''<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Strong Ratio Signals - Dashboard</title>
+    <title>Offline - Strong Ratio Dashboard</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            padding: 20px;
+        }
+        .container {
+            background: white;
+            border-radius: 20px;
+            padding: 40px;
+            text-align: center;
+            max-width: 500px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.2);
+            animation: fadeIn 0.5s ease;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(-20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .icon { font-size: 80px; margin-bottom: 20px; }
+        h1 { color: #667eea; margin-bottom: 10px; }
+        p { color: #666; margin-bottom: 20px; line-height: 1.6; }
+        button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 12px 30px;
+            border-radius: 25px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: transform 0.3s;
+        }
+        button:hover { transform: translateY(-2px); }
+        .countdown { margin-top: 20px; font-size: 12px; color: #999; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="icon">📡</div>
+        <h1>You are Offline</h1>
+        <p>Please check your internet connection and try again.</p>
+        <button onclick="retry()">🔄 Retry Connection</button>
+        <div class="countdown">Auto-retry in <span id="timer">5</span> seconds</div>
+    </div>
+    <script>
+        let count = 5;
+        const timer = setInterval(() => {
+            count--;
+            document.getElementById('timer').textContent = count;
+            if (count <= 0) {
+                clearInterval(timer);
+                location.reload();
+            }
+        }, 1000);
+        function retry() {
+            clearInterval(timer);
+            location.reload();
+        }
+    </script>
+</body>
+</html>'''
+
+def create_static_files():
+    """Create all static files"""
+    # Create manifest.json
+    with open("static/manifest.json", "w") as f:
+        json.dump(MANIFEST_JSON, f, indent=2)
+    print("✅ Created static/manifest.json")
+    
+    # Create sw.js
+    with open("static/sw.js", "w") as f:
+        f.write(SERVICE_WORKER_JS)
+    print("✅ Created static/sw.js")
+    
+    # Create offline.html
+    with open("static/offline.html", "w") as f:
+        f.write(OFFLINE_HTML)
+    print("✅ Created static/offline.html")
+    
+    # Create icon-192x192.png
+    create_icon_192()
+    
+    # Create icon-512x512.png
+    create_icon_512()
+
+def create_icon_192():
+    """Create 192x192 icon"""
+    icon_path = "static/icon-192x192.png"
+    if os.path.exists(icon_path):
+        return
+    
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+        
+        # Create image
+        img = Image.new('RGB', (192, 192), color='#667eea')
+        draw = ImageDraw.Draw(img)
+        
+        # Draw circle
+        draw.ellipse([16, 16, 176, 176], fill='#764ba2')
+        
+        # Draw inner rectangle
+        draw.rectangle([56, 56, 136, 136], fill='#667eea')
+        
+        # Draw text
+        try:
+            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 72)
+        except:
+            font = ImageFont.load_default()
+        
+        draw.text((66, 68), "SR", fill='white', font=font)
+        
+        # Save
+        img.save(icon_path)
+        print("✅ Created static/icon-192x192.png")
+    except Exception as e:
+        print(f"⚠️ Could not create icon-192x192.png: {e}")
+        print("   Creating simple base64 icon instead")
+        
+        # Create simple base64 PNG
+        create_base64_icon(icon_path, 192)
+
+def create_icon_512():
+    """Create 512x512 icon"""
+    icon_path = "static/icon-512x512.png"
+    if os.path.exists(icon_path):
+        return
+    
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+        
+        # Create image
+        img = Image.new('RGB', (512, 512), color='#667eea')
+        draw = ImageDraw.Draw(img)
+        
+        # Draw circle
+        draw.ellipse([40, 40, 472, 472], fill='#764ba2')
+        
+        # Draw inner rectangle
+        draw.rectangle([156, 156, 356, 356], fill='#667eea')
+        
+        # Draw text
+        try:
+            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 180)
+        except:
+            font = ImageFont.load_default()
+        
+        draw.text((176, 190), "SR", fill='white', font=font)
+        
+        # Save
+        img.save(icon_path)
+        print("✅ Created static/icon-512x512.png")
+    except Exception as e:
+        print(f"⚠️ Could not create icon-512x512.png: {e}")
+        create_base64_icon(icon_path, 512)
+
+def create_base64_icon(path, size):
+    """Create simple base64 icon as fallback"""
+    # Simple SVG template
+    svg = f'''<svg xmlns="http://www.w3.org/2000/svg" width="{size}" height="{size}" viewBox="0 0 {size} {size}">
+        <rect width="{size}" height="{size}" fill="#667eea"/>
+        <circle cx="{size//2}" cy="{size//2}" r="{size//2.5}" fill="#764ba2"/>
+        <text x="{size//2}" y="{size//2 + size//8}" font-size="{size//3}" text-anchor="middle" fill="white" font-family="Arial" font-weight="bold">SR</text>
+    </svg>'''
+    
+    # Convert SVG to PNG using base64 (simple placeholder)
+    from PIL import Image, ImageDraw, ImageFont
+    img = Image.new('RGB', (size, size), color='#667eea')
+    draw = ImageDraw.Draw(img)
+    draw.ellipse([size//8, size//8, size*7//8, size*7//8], fill='#764ba2')
+    draw.rectangle([size*3//8, size*3//8, size*5//8, size*5//8], fill='#667eea')
+    draw.text((size*3//8 + 5, size*3//8 + 5), "SR", fill='white')
+    img.save(path)
+    print(f"✅ Created {path}")
+
+# Create static files
+create_static_files()
+
+# =========================================================
+# MONGODB CONNECTION
+# =========================================================
+def get_db():
+    """Get MongoDB database connection"""
+    if not MONGODB_URI:
+        print("❌ MONGODBEMAIL_URI not set!")
+        return None
+    
+    try:
+        client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=10000)
+        client.admin.command('ping')
+        print("✅ MongoDB Connected")
+        return client[DATABASE_NAME]
+    except Exception as e:
+        print(f"❌ MongoDB Error: {e}")
+        return None
+
+# =========================================================
+# HTML TEMPLATE
+# =========================================================
+HTML_TEMPLATE = '''<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="theme-color" content="#667eea">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Strong Ratio">
+    <link rel="manifest" href="/static/manifest.json">
+    <link rel="apple-touch-icon" href="/static/icon-192x192.png">
+    <title>Strong Ratio Signals Dashboard</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.datatables.net/1.13.4/css/dataTables.bootstrap5.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/sweetalert2@11/dist/sweetalert2.min.css" rel="stylesheet">
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-        
+        * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             min-height: 100vh;
             padding: 20px;
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
         }
-        
         .container-main {
             background: white;
-            border-radius: 15px;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.1);
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.1);
             padding: 30px;
-            margin-top: 20px;
-            animation: fadeIn 0.5s ease-in;
+            animation: fadeIn 0.5s ease;
         }
-        
         @keyframes fadeIn {
-            from {
-                opacity: 0;
-                transform: translateY(-20px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
+            from { opacity: 0; transform: translateY(-20px); }
+            to { opacity: 1; transform: translateY(0); }
         }
-        
         .header {
             text-align: center;
             margin-bottom: 30px;
             padding-bottom: 20px;
             border-bottom: 3px solid #667eea;
         }
-        
-        .header h1 {
-            color: #333;
-            font-weight: bold;
-            margin-bottom: 10px;
-            font-size: 2.5em;
-        }
-        
-        .header p {
-            color: #666;
-            font-size: 14px;
-        }
-        
+        .header h1 { color: #333; font-weight: bold; font-size: 2.2em; }
+        .header p { color: #666; }
         .btn-install {
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
@@ -89,203 +435,60 @@ HTML_TEMPLATE = """
             border-radius: 25px;
             font-weight: bold;
             margin-bottom: 20px;
-            transition: transform 0.3s, box-shadow 0.3s;
+            transition: all 0.3s;
         }
-        
-        .btn-install:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        .btn-install:hover { transform: translateY(-2px); box-shadow: 0 5px 15px rgba(102,126,234,0.4); color: white; }
+        .btn-refresh {
+            background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
             color: white;
+            border: none;
+            padding: 10px 30px;
+            border-radius: 25px;
+            font-weight: bold;
+            margin-left: 10px;
+            transition: all 0.3s;
         }
-        
+        .btn-refresh:hover { transform: translateY(-2px); color: white; }
         .stats-card {
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
-            border-radius: 10px;
-            padding: 15px;
-            margin-bottom: 20px;
+            border-radius: 15px;
+            padding: 20px;
             text-align: center;
             transition: transform 0.3s;
         }
-        
-        .stats-card:hover {
-            transform: translateY(-5px);
-        }
-        
-        .stats-card h3 {
-            margin: 0;
-            font-size: 28px;
-            font-weight: bold;
-        }
-        
-        .stats-card p {
-            margin: 5px 0 0;
-            opacity: 0.9;
-        }
-        
-        .table-container {
-            overflow-x: auto;
-            margin-top: 20px;
-        }
-        
-        #dataTable {
-            font-size: 14px;
-        }
-        
-        #dataTable th {
-            background: #667eea;
-            color: white;
-            padding: 12px;
-            text-align: center;
-            font-weight: 600;
-        }
-        
-        #dataTable td {
-            text-align: center;
-            vertical-align: middle;
-            padding: 10px;
-        }
-        
-        #dataTable tr:hover {
-            background-color: #f5f5f5;
-        }
-        
+        .stats-card:hover { transform: translateY(-5px); }
+        .stats-card h3 { font-size: 32px; font-weight: bold; margin: 0; }
+        .stats-card p { margin: 10px 0 0; opacity: 0.9; }
+        .table-container { overflow-x: auto; margin-top: 30px; }
+        #dataTable { font-size: 14px; }
+        #dataTable th { background: #667eea; color: white; padding: 12px; text-align: center; }
+        #dataTable td { text-align: center; vertical-align: middle; padding: 10px; }
         .btn-delete {
-            background: #dc3545;
-            color: white;
-            border: none;
-            padding: 5px 12px;
-            border-radius: 5px;
-            cursor: pointer;
-            transition: all 0.3s;
-            margin: 0 3px;
+            background: #dc3545; color: white; border: none; padding: 5px 12px;
+            border-radius: 5px; cursor: pointer; transition: all 0.3s;
         }
-        
-        .btn-delete:hover {
-            background: #c82333;
-            transform: scale(1.05);
-        }
-        
+        .btn-delete:hover { background: #c82333; transform: scale(1.05); }
         .btn-delete-date {
-            background: #ffc107;
-            color: #333;
-            border: none;
-            padding: 5px 12px;
-            border-radius: 5px;
-            cursor: pointer;
-            margin-left: 5px;
-            transition: all 0.3s;
+            background: #ffc107; color: #333; border: none; padding: 5px 12px;
+            border-radius: 5px; cursor: pointer; margin-left: 5px; transition: all 0.3s;
         }
-        
-        .btn-delete-date:hover {
-            background: #e0a800;
-            transform: scale(1.05);
-        }
-        
-        .badge-bullish {
-            background: #28a745;
-            color: white;
-            padding: 5px 10px;
-            border-radius: 5px;
-            font-size: 12px;
-            font-weight: 600;
-        }
-        
-        .badge-bearish {
-            background: #dc3545;
-            color: white;
-            padding: 5px 10px;
-            border-radius: 5px;
-            font-size: 12px;
-            font-weight: 600;
-        }
-        
-        .badge-neutral {
-            background: #ffc107;
-            color: #333;
-            padding: 5px 10px;
-            border-radius: 5px;
-            font-size: 12px;
-            font-weight: 600;
-        }
-        
-        .loading {
-            text-align: center;
-            padding: 50px;
-            font-size: 18px;
-            color: #667eea;
-        }
-        
-        .footer {
-            text-align: center;
-            margin-top: 30px;
-            padding-top: 20px;
-            border-top: 1px solid #ddd;
-            color: #666;
-        }
-        
-        .status-badge {
-            display: inline-block;
-            width: 10px;
-            height: 10px;
-            border-radius: 50%;
-            background: #28a745;
-            margin-right: 8px;
-            animation: pulse 2s infinite;
-        }
-        
+        .btn-delete-date:hover { background: #e0a800; transform: scale(1.05); }
+        .badge-bullish { background: #28a745; color: white; padding: 5px 10px; border-radius: 5px; font-weight: 600; }
+        .badge-bearish { background: #dc3545; color: white; padding: 5px 10px; border-radius: 5px; font-weight: 600; }
+        .badge-neutral { background: #ffc107; color: #333; padding: 5px 10px; border-radius: 5px; font-weight: 600; }
+        .footer { text-align: center; margin-top: 30px; padding-top: 20px; border-top: 1px solid #ddd; color: #666; }
+        .status-badge { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: #28a745; margin-right: 8px; animation: pulse 2s infinite; }
         @keyframes pulse {
-            0% {
-                box-shadow: 0 0 0 0 rgba(40, 167, 69, 0.7);
-            }
-            70% {
-                box-shadow: 0 0 0 10px rgba(40, 167, 69, 0);
-            }
-            100% {
-                box-shadow: 0 0 0 0 rgba(40, 167, 69, 0);
-            }
+            0% { box-shadow: 0 0 0 0 rgba(40,167,69,0.7); }
+            70% { box-shadow: 0 0 0 10px rgba(40,167,69,0); }
+            100% { box-shadow: 0 0 0 0 rgba(40,167,69,0); }
         }
-        
         @media (max-width: 768px) {
-            .container-main {
-                padding: 15px;
-            }
-            
-            .header h1 {
-                font-size: 1.5em;
-            }
-            
-            #dataTable {
-                font-size: 11px;
-            }
-            
-            .btn-delete, .btn-delete-date {
-                padding: 3px 8px;
-                font-size: 11px;
-            }
-            
-            .stats-card h3 {
-                font-size: 20px;
-            }
-        }
-        
-        ::-webkit-scrollbar {
-            width: 8px;
-            height: 8px;
-        }
-        
-        ::-webkit-scrollbar-track {
-            background: #f1f1f1;
-            border-radius: 10px;
-        }
-        
-        ::-webkit-scrollbar-thumb {
-            background: #667eea;
-            border-radius: 10px;
-        }
-        
-        ::-webkit-scrollbar-thumb:hover {
-            background: #764ba2;
+            .container-main { padding: 15px; }
+            .header h1 { font-size: 1.5em; }
+            #dataTable { font-size: 11px; }
+            .stats-card h3 { font-size: 24px; }
         }
     </style>
 </head>
@@ -294,76 +497,42 @@ HTML_TEMPLATE = """
         <div class="container-main">
             <div class="header">
                 <h1>📊 Strong Ratio Signals Dashboard</h1>
-                <p>FastAPI + MongoDB | Strong Divergence Analysis | Auto-sync with Daily Script</p>
-                <div class="mt-2">
-                    <span class="status-badge"></span>
-                    <small>Live Connection Active | FastAPI Backend</small>
-                </div>
+                <p>FastAPI + MongoDB | Real-time Data | PWA Ready</p>
+                <div><span class="status-badge"></span> <small>Live Connection</small></div>
             </div>
             
-            <div class="row">
-                <div class="col-md-3 col-sm-6">
-                    <div class="stats-card">
-                        <p>📈 Total Records</p>
-                        <h3 id="totalRecords">0</h3>
-                    </div>
+            <div class="row mb-4">
+                <div class="col-md-3 col-sm-6 mb-3">
+                    <div class="stats-card"><p>📈 Total Records</p><h3 id="totalRecords">0</h3></div>
                 </div>
-                <div class="col-md-3 col-sm-6">
-                    <div class="stats-card">
-                        <p>📅 Unique Dates</p>
-                        <h3 id="uniqueDates">0</h3>
-                    </div>
+                <div class="col-md-3 col-sm-6 mb-3">
+                    <div class="stats-card"><p>📅 Unique Dates</p><h3 id="uniqueDates">0</h3></div>
                 </div>
-                <div class="col-md-3 col-sm-6">
-                    <div class="stats-card">
-                        <p>🎯 Avg Bullish Prob</p>
-                        <h3 id="avgBullish">0%</h3>
-                    </div>
+                <div class="col-md-3 col-sm-6 mb-3">
+                    <div class="stats-card"><p>🎯 Avg Bullish Prob</p><h3 id="avgBullish">0%</h3></div>
                 </div>
-                <div class="col-md-3 col-sm-6">
-                    <div class="stats-card">
-                        <p>🕐 Last Update</p>
-                        <h3 id="lastUpdate">-</h3>
-                    </div>
+                <div class="col-md-3 col-sm-6 mb-3">
+                    <div class="stats-card"><p>🕐 Last Update</p><h3 id="lastUpdate">-</h3></div>
                 </div>
             </div>
             
             <div class="text-center">
-                <button class="btn btn-install" onclick="installData()">
-                    🔄 Install / Refresh Data
-                </button>
+                <button class="btn-install" id="installBtn" style="display:none;">📱 Install App</button>
+                <button class="btn-refresh" onclick="refreshData()">🔄 Refresh Data</button>
             </div>
             
             <div class="table-container">
                 <table id="dataTable" class="table table-bordered table-hover">
                     <thead>
-                        <tr>
-                            <th>No</th>
-                            <th>Date (D-M-Y)</th>
-                            <th>RT (Symbol)</th>
-                            <th>BBR</th>
-                            <th>Strong</th>
-                            <th>Strong Ratio</th>
-                            <th>Bullish Probability</th>
-                            <th>Actions</th>
-                        </tr>
+                        <tr><th>No</th><th>Date</th><th>RT</th><th>BBR</th><th>Strong</th><th>Strong Ratio</th><th>Bullish Prob</th><th>Actions</th></tr>
                     </thead>
-                    <tbody>
-                        <tr>
-                            <td colspan="8" class="loading">
-                                <div class="spinner-border text-primary" role="status">
-                                    <span class="visually-hidden">Loading...</span>
-                                </div>
-                                <div class="mt-2">Loading data from MongoDB via FastAPI...</div>
-                            </td>
-                        </tr>
-                    </tbody>
+                    <tbody><tr><td colspan="8" class="text-center"><div class="spinner-border text-primary"></div><br>Loading...</td></tr></tbody>
                 </table>
             </div>
             
             <div class="footer">
-                <p>🚀 Powered by FastAPI + MongoDB | 📡 Auto-sync with daily script | 🔄 UptimeRobot Enabled | 💾 All data preserved</p>
-                <p class="small">Last auto-refresh: <span id="refreshTime">-</span></p>
+                <p>🚀 FastAPI + MongoDB | 📡 Auto-sync | 💾 PWA Enabled | 🔄 Auto-refresh every 3 min</p>
+                <small>Last refresh: <span id="refreshTime">-</span></small>
             </div>
         </div>
     </div>
@@ -375,27 +544,31 @@ HTML_TEMPLATE = """
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
     
     <script>
-        let dataTable;
-        let autoRefreshInterval;
+        let dataTable, deferredPrompt;
         
-        $(document).ready(function() {
-            loadData();
-            startAutoRefresh();
-            updateRefreshTime();
+        // Register Service Worker
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('/static/sw.js')
+                .then(reg => console.log('SW registered:', reg))
+                .catch(err => console.log('SW failed:', err));
+        }
+        
+        // Install Button
+        window.addEventListener('beforeinstallprompt', (e) => {
+            e.preventDefault();
+            deferredPrompt = e;
+            document.getElementById('installBtn').style.display = 'inline-block';
+            document.getElementById('installBtn').onclick = async () => {
+                if (deferredPrompt) {
+                    deferredPrompt.prompt();
+                    const { outcome } = await deferredPrompt.userChoice;
+                    deferredPrompt = null;
+                    document.getElementById('installBtn').style.display = 'none';
+                }
+            };
         });
         
-        function startAutoRefresh() {
-            autoRefreshInterval = setInterval(function() {
-                loadData();
-                updateRefreshTime();
-            }, 180000);
-        }
-        
-        function updateRefreshTime() {
-            const now = new Date();
-            const timeString = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-            $('#refreshTime').text(timeString);
-        }
+        function refreshData() { loadData(); }
         
         function loadData() {
             $.ajax({
@@ -403,49 +576,30 @@ HTML_TEMPLATE = """
                 method: 'GET',
                 timeout: 30000,
                 success: function(data) {
-                    if (data.error) {
-                        showError(data.error);
-                        return;
-                    }
-                    
+                    if (data.error) { showError(data.error); return; }
                     updateStats(data);
                     renderTable(data);
+                    document.getElementById('refreshTime').innerText = new Date().toLocaleTimeString();
                 },
-                error: function(xhr, status, error) {
-                    console.error('Load error:', error);
-                    if (status === 'timeout') {
-                        showError('Request timeout - MongoDB connection may be slow');
-                    } else {
-                        showError('Failed to load data: ' + (xhr.responseJSON?.error || error || 'Unknown error'));
-                    }
-                }
+                error: function() { showError('Failed to load data'); }
             });
         }
         
         function updateStats(data) {
-            $('#totalRecords').text(data.length.toLocaleString());
+            document.getElementById('totalRecords').innerText = data.length;
+            const uniqueDates = [...new Set(data.map(d => d.date).filter(d => d))];
+            document.getElementById('uniqueDates').innerText = uniqueDates.length;
             
-            const uniqueDates = [...new Set(data.map(item => item.date).filter(d => d))];
-            $('#uniqueDates').text(uniqueDates.length.toLocaleString());
-            
-            let totalProb = 0;
-            let countProb = 0;
-            data.forEach(item => {
-                if (item.bullish_probability) {
-                    const prob = parseFloat(item.bullish_probability);
-                    if (!isNaN(prob)) {
-                        totalProb += prob;
-                        countProb++;
-                    }
+            let total = 0, count = 0;
+            data.forEach(d => {
+                if (d.bullish_probability) {
+                    let p = parseFloat(d.bullish_probability);
+                    if (!isNaN(p)) { total += p; count++; }
                 }
             });
-            const avgProb = countProb > 0 ? (totalProb / countProb).toFixed(1) : 0;
-            $('#avgBullish').text(avgProb + '%');
-            
-            if (data.length > 0) {
-                const sortedDates = data.map(d => d.date).filter(d => d).sort().reverse();
-                $('#lastUpdate').text(sortedDates[0] || '-');
-            }
+            let avg = count > 0 ? (total / count).toFixed(1) : 0;
+            document.getElementById('avgBullish').innerText = avg + '%';
+            if (data.length > 0) document.getElementById('lastUpdate').innerText = data[0].date || '-';
         }
         
         function renderTable(data) {
@@ -453,424 +607,225 @@ HTML_TEMPLATE = """
             tbody.empty();
             
             if (data.length === 0) {
-                tbody.html('<tr><td colspan="8" class="text-center">📭 No data available in database</td></tr>');
-                if (dataTable) {
-                    dataTable.destroy();
-                    dataTable = null;
-                }
+                tbody.html('<tr><td colspan="8" class="text-center">No data available</td></tr>');
+                if (dataTable) dataTable.destroy();
                 return;
             }
             
-            data.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
-            data.forEach((item, index) => {
-                item.no = index + 1;
-            });
+            data.sort((a,b) => (b.date || '').localeCompare(a.date || ''));
+            data.forEach((item, idx) => item.no = idx + 1);
             
             data.forEach(item => {
-                const bullishProb = item.bullish_probability || 'N/A';
-                let probClass = '';
-                
-                if (bullishProb !== 'N/A') {
-                    const probValue = parseFloat(bullishProb);
-                    if (probValue >= 60) {
-                        probClass = 'badge-bearish';
-                    } else if (probValue >= 45) {
-                        probClass = 'badge-neutral';
-                    } else {
-                        probClass = 'badge-bullish';
-                    }
+                let probClass = '', probHtml = '';
+                if (item.bullish_probability && item.bullish_probability !== 'N/A') {
+                    let pv = parseFloat(item.bullish_probability);
+                    probClass = pv >= 60 ? 'badge-bearish' : (pv >= 45 ? 'badge-neutral' : 'badge-bullish');
+                    probHtml = `<span class="${probClass}">${item.bullish_probability}</span>`;
+                } else {
+                    probHtml = '<span class="badge-neutral">N/A</span>';
                 }
                 
-                const strongRatio = item.strong_ratio ? parseFloat(item.strong_ratio).toFixed(2) : '-';
+                let strongRatio = item.strong_ratio ? parseFloat(item.strong_ratio).toFixed(2) : '-';
                 
-                const row = `
-                    <tr>
-                        <td><strong>${item.no}</strong></td>
-                        <td><strong class="text-primary">${item.date || '-'}</strong></td>
-                        <td><code>${item.rt || '-'}</code></td>
-                        <td>${item.bbr || '-'}</td>
-                        <td class="text-truncate" style="max-width: 150px;">${item.strong || '-'}</td>
-                        <td>${strongRatio}</td>
-                        <td>
-                            ${bullishProb !== 'N/A' ? 
-                                `<span class="${probClass}">${bullishProb}</span>` : 
-                                '<span class="badge-neutral">N/A</span>'}
-                        </td>
-                        <td>
-                            <button class="btn-delete" onclick="deleteRecord('${item.date}', '${item.rt}')" title="Delete this record">
-                                🗑️ Delete
-                            </button>
-                            <button class="btn-delete-date" onclick="deleteDate('${item.date}')" title="Delete all records for this date">
-                                📅 Delete Date
-                            </button>
-                        </td>
-                    </tr>
-                `;
+                let row = `<tr>
+                    <td><strong>${item.no}</strong></td>
+                    <td><strong class="text-primary">${item.date || '-'}</strong></td>
+                    <td><code>${item.rt || '-'}</code></td>
+                    <td>${item.bbr || '-'}</td>
+                    <td style="max-width:150px; overflow:hidden; text-overflow:ellipsis;">${item.strong || '-'}</td>
+                    <td>${strongRatio}</td>
+                    <td>${probHtml}</td>
+                    <td>
+                        <button class="btn-delete" onclick="deleteRecord('${item.date}', '${item.rt}')">🗑️ Delete</button>
+                        <button class="btn-delete-date" onclick="deleteDate('${item.date}')">📅 Delete Date</button>
+                    </td>
+                </tr>`;
                 tbody.append(row);
             });
             
-            if (dataTable) {
-                dataTable.destroy();
-            }
-            
+            if (dataTable) dataTable.destroy();
             dataTable = $('#dataTable').DataTable({
                 pageLength: 25,
                 responsive: true,
                 order: [[1, 'desc']],
-                language: {
-                    search: "🔍 Search:",
-                    lengthMenu: "Show _MENU_ entries",
-                    info: "Showing _START_ to _END_ of _TOTAL_ records",
-                    paginate: {
-                        first: "First",
-                        last: "Last",
-                        next: "Next",
-                        previous: "Previous"
-                    }
-                },
-                columnDefs: [
-                    { orderable: false, targets: [7] }
-                ]
+                columnDefs: [{ orderable: false, targets: [7] }]
             });
         }
         
         function deleteRecord(date, rt) {
-            if (!date || !rt) {
-                Swal.fire('Error!', 'Invalid record data', 'error');
-                return;
-            }
-            
             Swal.fire({
-                title: '⚠️ Are you sure?',
-                html: `Delete record for <strong>${rt}</strong> on <strong>${date}</strong>?`,
+                title: 'Confirm Delete',
+                html: `Delete <strong>${rt}</strong> on <strong>${date}</strong>?`,
                 icon: 'warning',
                 showCancelButton: true,
                 confirmButtonColor: '#dc3545',
-                cancelButtonColor: '#6c757d',
-                confirmButtonText: 'Yes, delete it!',
-                cancelButtonText: 'Cancel'
-            }).then((result) => {
+                confirmButtonText: 'Delete'
+            }).then(result => {
                 if (result.isConfirmed) {
                     $.ajax({
                         url: `/api/delete/${encodeURIComponent(date)}/${encodeURIComponent(rt)}`,
                         method: 'DELETE',
-                        success: function(response) {
-                            if (response.success) {
-                                Swal.fire('Deleted!', response.message, 'success');
-                                loadData();
-                            } else {
-                                Swal.fire('Error!', response.message, 'error');
-                            }
-                        },
-                        error: function(xhr) {
-                            Swal.fire('Error!', xhr.responseJSON?.message || 'Delete failed', 'error');
-                        }
+                        success: res => { Swal.fire('Deleted!', res.message, 'success'); loadData(); },
+                        error: () => Swal.fire('Error!', 'Delete failed', 'error')
                     });
                 }
             });
         }
         
         function deleteDate(date) {
-            if (!date) {
-                Swal.fire('Error!', 'Invalid date', 'error');
-                return;
-            }
-            
             Swal.fire({
-                title: '⚠️ Delete Entire Date?',
-                html: `Delete <strong>ALL records</strong> for <strong>${date}</strong>?<br><small>This action cannot be undone!</small>`,
+                title: 'Delete All Records?',
+                html: `Delete ALL records for <strong>${date}</strong>?<br><small>This cannot be undone!</small>`,
                 icon: 'warning',
                 showCancelButton: true,
                 confirmButtonColor: '#dc3545',
-                cancelButtonColor: '#6c757d',
-                confirmButtonText: 'Yes, delete all!',
-                cancelButtonText: 'Cancel'
-            }).then((result) => {
+                confirmButtonText: 'Delete All'
+            }).then(result => {
                 if (result.isConfirmed) {
                     $.ajax({
                         url: `/api/delete/${encodeURIComponent(date)}`,
                         method: 'DELETE',
-                        success: function(response) {
-                            if (response.success) {
-                                Swal.fire('Deleted!', response.message, 'success');
-                                loadData();
-                            } else {
-                                Swal.fire('Error!', response.message, 'error');
-                            }
-                        },
-                        error: function(xhr) {
-                            Swal.fire('Error!', xhr.responseJSON?.message || 'Delete failed', 'error');
-                        }
+                        success: res => { Swal.fire('Deleted!', res.message, 'success'); loadData(); },
+                        error: () => Swal.fire('Error!', 'Delete failed', 'error')
                     });
                 }
             });
         }
         
-        function installData() {
-            Swal.fire({
-                title: '🔄 Install / Refresh Data',
-                html: `
-                    <div class="text-left">
-                        <p>Data is automatically synced from the daily script.</p>
-                        <p><strong>API Backend:</strong> FastAPI</p>
-                        <p><strong>Database:</strong> MongoDB</p>
-                        <p><small class="text-muted">Last sync: ${$('#lastUpdate').text()}</small></p>
-                    </div>
-                `,
-                icon: 'info',
-                confirmButtonText: 'OK',
-                confirmButtonColor: '#667eea'
-            });
-        }
+        function showError(msg) { Swal.fire('Error', msg, 'error'); }
         
-        function showError(message) {
-            Swal.fire({
-                title: 'Error!',
-                text: message,
-                icon: 'error',
-                confirmButtonText: 'OK',
-                confirmButtonColor: '#dc3545'
-            });
-        }
-        
-        $(document).keydown(function(e) {
-            if (e.key === 'F5') {
-                e.preventDefault();
-                loadData();
-                Swal.fire({
-                    title: 'Refreshed',
-                    text: 'Data has been refreshed',
-                    icon: 'success',
-                    timer: 1500,
-                    showConfirmButton: false
-                });
-            }
-        });
+        $(document).ready(() => { loadData(); setInterval(loadData, 180000); });
     </script>
 </body>
-</html>
-"""
+</html>'''
 
-# MongoDB Connection Function
-def get_db():
-    """Get MongoDB database connection"""
-    try:
-        if not MONGODB_URI:
-            print("❌ MONGODBEMAIL_URI environment variable not set!")
-            return None
-        
-        client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=10000)
-        client.admin.command('ping')
-        print("✅ MongoDB Connected Successfully!")
-        return client[DATABASE_NAME]
-    except Exception as e:
-        print(f"❌ MongoDB Connection Error: {e}")
-        return None
-
-# FastAPI App with lifespan
+# =========================================================
+# FASTAPI APP
+# =========================================================
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
-    print("🚀 FastAPI Application Starting...")
-    print(f"📅 Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    
-    # Start keep-alive thread
-    keep_alive_thread = threading.Thread(target=keep_alive, daemon=True)
-    keep_alive_thread.start()
-    print("✅ Keep-alive thread started")
-    
+    print("=" * 60)
+    print("🚀 Strong Ratio Dashboard Starting...")
+    print("=" * 60)
     yield
-    
-    # Shutdown
-    print("🛑 FastAPI Application Shutting Down...")
+    print("🛑 Shutting down...")
 
-app = FastAPI(title="Strong Ratio Signals Dashboard", 
-              description="MongoDB based dashboard for strong ratio signals",
-              version="1.0.0",
-              lifespan=lifespan)
+app = FastAPI(title="Strong Ratio Dashboard", version="1.0.0", lifespan=lifespan)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-# CORS Middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Mount static files
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
-# Routes
+# =========================================================
+# API ROUTES
+# =========================================================
 @app.get("/", response_class=HTMLResponse)
 async def index():
-    """Render the main dashboard"""
     return HTML_TEMPLATE
 
 @app.get("/api/data")
 async def get_data():
-    """Get all data from strong_ratio_signals collection"""
     db = get_db()
-    if db is None:
-        raise HTTPException(status_code=500, detail="Database connection failed")
+    if not db:
+        raise HTTPException(500, "Database connection failed")
     
     try:
         collection = db[COLLECTION_NAME]
-        
-        # Get all data
         data = list(collection.find({}, {'_id': 0}))
-        
-        # Sort by date (latest first)
         data.sort(key=lambda x: x.get('date', ''), reverse=True)
-        
-        # Add serial number
-        for idx, item in enumerate(data, 1):
-            item['no'] = idx
-        
-        return JSONResponse(content=data)
+        for i, item in enumerate(data, 1):
+            item['no'] = i
+        return data
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(500, str(e))
 
 @app.delete("/api/delete/{date}")
 async def delete_by_date(date: str):
-    """Delete all records for a specific date"""
     db = get_db()
-    if db is None:
-        raise HTTPException(status_code=500, detail="Database connection failed")
+    if not db:
+        raise HTTPException(500, "Database connection failed")
     
-    try:
-        collection = db[COLLECTION_NAME]
-        
-        result = collection.delete_many({'date': date})
-        
-        if result.deleted_count > 0:
-            return JSONResponse(content={
-                'success': True,
-                'message': f'✅ Deleted {result.deleted_count} record(s) for date {date}'
-            })
-        else:
-            raise HTTPException(status_code=404, detail=f'⚠️ No records found for date {date}')
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    result = db[COLLECTION_NAME].delete_many({'date': date})
+    if result.deleted_count > 0:
+        return {'success': True, 'message': f'Deleted {result.deleted_count} record(s)'}
+    raise HTTPException(404, f'No records found for date {date}')
 
 @app.delete("/api/delete/{date}/{rt}")
-async def delete_by_date_and_rt(date: str, rt: str):
-    """Delete a specific record by date and rt"""
+async def delete_by_date_rt(date: str, rt: str):
     db = get_db()
-    if db is None:
-        raise HTTPException(status_code=500, detail="Database connection failed")
+    if not db:
+        raise HTTPException(500, "Database connection failed")
     
-    try:
-        collection = db[COLLECTION_NAME]
-        
-        result = collection.delete_one({'date': date, 'rt': rt})
-        
-        if result.deleted_count > 0:
-            return JSONResponse(content={
-                'success': True,
-                'message': f'✅ Deleted record for {rt} on {date}'
-            })
-        else:
-            raise HTTPException(status_code=404, detail=f'⚠️ No record found for {rt} on {date}')
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/api/install")
-async def install_data():
-    """Manual data installation/refresh endpoint"""
-    return JSONResponse(content={
-        'success': True,
-        'message': 'Data is automatically synced from daily script. No manual installation needed.',
-        'status': 'active',
-        'backend': 'FastAPI',
-        'last_sync': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    })
+    result = db[COLLECTION_NAME].delete_one({'date': date, 'rt': rt})
+    if result.deleted_count > 0:
+        return {'success': True, 'message': f'Deleted {rt} on {date}'}
+    raise HTTPException(404, 'Record not found')
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint for UptimeRobot"""
     db = get_db()
-    if db is None:
-        return JSONResponse(content={
-            'status': 'unhealthy',
-            'mongodb': 'disconnected',
-            'backend': 'FastAPI'
-        }, status_code=500)
+    if not db:
+        return {'status': 'unhealthy', 'mongodb': 'disconnected'}
     
     try:
-        collection = db[COLLECTION_NAME]
-        count = collection.count_documents({})
-        return JSONResponse(content={
+        count = db[COLLECTION_NAME].count_documents({})
+        return {
             'status': 'healthy',
             'mongodb': 'connected',
-            'backend': 'FastAPI',
-            'record_count': count,
+            'records': count,
             'timestamp': datetime.now().isoformat()
-        })
+        }
     except Exception as e:
-        return JSONResponse(content={
-            'status': 'unhealthy',
-            'error': str(e),
-            'backend': 'FastAPI'
-        }, status_code=500)
+        return {'status': 'unhealthy', 'error': str(e)}
 
 @app.get("/api/stats")
 async def get_stats():
-    """Get statistics about the data"""
     db = get_db()
-    if db is None:
-        raise HTTPException(status_code=500, detail="Database connection failed")
+    if not db:
+        raise HTTPException(500, "Database connection failed")
     
-    try:
-        collection = db[COLLECTION_NAME]
-        
-        total_records = collection.count_documents({})
-        
-        # Get unique dates
-        dates = collection.distinct('date')
-        unique_dates = len(dates)
-        
-        return JSONResponse(content={
-            'total_records': total_records,
-            'unique_dates': unique_dates,
-            'dates': sorted(dates, reverse=True)[:10],  # Last 10 dates
-            'last_update': datetime.now().isoformat()
-        })
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    collection = db[COLLECTION_NAME]
+    return {
+        'total_records': collection.count_documents({}),
+        'unique_dates': len(collection.distinct('date')),
+        'timestamp': datetime.now().isoformat()
+    }
 
-# Keep Alive Function for Render.com
+# =========================================================
+# KEEP ALIVE FOR RENDER.COM
+# =========================================================
 def keep_alive():
     """Keep the app alive with periodic pings"""
-    time.sleep(30)  # Wait for app to start
+    time.sleep(30)
     while True:
         try:
-            # Use requests to ping the health endpoint
             response = requests.get('http://localhost:8000/health', timeout=5)
             if response.status_code == 200:
-                print(f"[Keep Alive] Health check passed at {datetime.now()}")
-            else:
-                print(f"[Keep Alive] Health check returned {response.status_code}")
+                print(f"[Keep Alive] OK at {datetime.now()}")
         except Exception as e:
             print(f"[Keep Alive] Error: {e}")
-        time.sleep(300)  # Every 5 minutes
+        time.sleep(300)
 
-# For running with uvicorn directly
+# =========================================================
+# MAIN
+# =========================================================
 if __name__ == "__main__":
     import uvicorn
     
-    # Get port from environment variable
+    # Start keep-alive thread
+    keep_alive_thread = threading.Thread(target=keep_alive, daemon=True)
+    keep_alive_thread.start()
+    
     port = int(os.environ.get('PORT', 8000))
     
     print("=" * 60)
-    print("🚀 Strong Ratio Signals Dashboard - FastAPI")
+    print("📊 STRONG RATIO SIGNALS DASHBOARD")
     print("=" * 60)
-    print(f"📅 Server Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"🔗 MongoDB URI: {'✓ Set' if MONGODB_URI else '✗ Not Set'}")
-    print(f"🗄️  Database: {DATABASE_NAME}")
-    print(f"📂 Collection: {COLLECTION_NAME}")
-    print(f"🌐 FastAPI Server: http://0.0.0.0:{port}")
-    print(f"📊 Dashboard: http://0.0.0.0:{port}/")
-    print(f"❤️ Health Check: http://0.0.0.0:{port}/health")
-    print(f"📈 API Stats: http://0.0.0.0:{port}/api/stats")
-    print(f"🛠️  API Docs: http://0.0.0.0:{port}/docs")
+    print(f"🌐 Server: http://0.0.0.0:{port}")
+    print(f"📱 PWA Ready: Install from browser")
+    print(f"❤️ Health: http://0.0.0.0:{port}/health")
+    print(f"📈 Stats: http://0.0.0.0:{port}/api/stats")
+    print(f"📚 API Docs: http://0.0.0.0:{port}/docs")
     print("=" * 60)
     
     uvicorn.run(app, host='0.0.0.0', port=port)
