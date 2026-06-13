@@ -1,4 +1,6 @@
-from flask import Flask, render_template_string, request, jsonify
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pymongo import MongoClient
 from datetime import datetime
 import os
@@ -6,12 +8,11 @@ from dotenv import load_dotenv
 import threading
 import time
 import requests
+from contextlib import asynccontextmanager
 
 load_dotenv()
 
-app = Flask(__name__)
-
-# MongoDB Connection
+# MongoDB Configuration
 MONGODB_URI = os.environ.get("MONGODBEMAIL_URI", "")
 DATABASE_NAME = "swing_trading_db"
 COLLECTION_NAME = "strong_ratio_signals"
@@ -268,7 +269,6 @@ HTML_TEMPLATE = """
             }
         }
         
-        /* Custom scrollbar */
         ::-webkit-scrollbar {
             width: 8px;
             height: 8px;
@@ -294,10 +294,10 @@ HTML_TEMPLATE = """
         <div class="container-main">
             <div class="header">
                 <h1>📊 Strong Ratio Signals Dashboard</h1>
-                <p>Real-time MongoDB Data Management | Strong Divergence Analysis | Auto-sync with Daily Script</p>
+                <p>FastAPI + MongoDB | Strong Divergence Analysis | Auto-sync with Daily Script</p>
                 <div class="mt-2">
                     <span class="status-badge"></span>
-                    <small>Live Connection Active</small>
+                    <small>Live Connection Active | FastAPI Backend</small>
                 </div>
             </div>
             
@@ -354,7 +354,7 @@ HTML_TEMPLATE = """
                                 <div class="spinner-border text-primary" role="status">
                                     <span class="visually-hidden">Loading...</span>
                                 </div>
-                                <div class="mt-2">Loading data from MongoDB...</div>
+                                <div class="mt-2">Loading data from MongoDB via FastAPI...</div>
                             </td>
                         </tr>
                     </tbody>
@@ -362,7 +362,7 @@ HTML_TEMPLATE = """
             </div>
             
             <div class="footer">
-                <p>🚀 Powered by Flask + MongoDB | 📡 Auto-sync with daily script | 🔄 UptimeRobot Enabled | 💾 All data preserved</p>
+                <p>🚀 Powered by FastAPI + MongoDB | 📡 Auto-sync with daily script | 🔄 UptimeRobot Enabled | 💾 All data preserved</p>
                 <p class="small">Last auto-refresh: <span id="refreshTime">-</span></p>
             </div>
         </div>
@@ -378,7 +378,6 @@ HTML_TEMPLATE = """
         let dataTable;
         let autoRefreshInterval;
         
-        // Load data on page load
         $(document).ready(function() {
             loadData();
             startAutoRefresh();
@@ -386,7 +385,6 @@ HTML_TEMPLATE = """
         });
         
         function startAutoRefresh() {
-            // Auto-refresh every 3 minutes
             autoRefreshInterval = setInterval(function() {
                 loadData();
                 updateRefreshTime();
@@ -425,14 +423,11 @@ HTML_TEMPLATE = """
         }
         
         function updateStats(data) {
-            // Total records
             $('#totalRecords').text(data.length.toLocaleString());
             
-            // Unique dates
             const uniqueDates = [...new Set(data.map(item => item.date).filter(d => d))];
             $('#uniqueDates').text(uniqueDates.length.toLocaleString());
             
-            // Average bullish probability
             let totalProb = 0;
             let countProb = 0;
             data.forEach(item => {
@@ -447,7 +442,6 @@ HTML_TEMPLATE = """
             const avgProb = countProb > 0 ? (totalProb / countProb).toFixed(1) : 0;
             $('#avgBullish').text(avgProb + '%');
             
-            // Last update (latest date)
             if (data.length > 0) {
                 const sortedDates = data.map(d => d.date).filter(d => d).sort().reverse();
                 $('#lastUpdate').text(sortedDates[0] || '-');
@@ -467,20 +461,17 @@ HTML_TEMPLATE = """
                 return;
             }
             
-            // Sort by date (latest first) and add serial numbers
             data.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
             data.forEach((item, index) => {
                 item.no = index + 1;
             });
             
-            // Render rows
             data.forEach(item => {
                 const bullishProb = item.bullish_probability || 'N/A';
                 let probClass = '';
-                let probValue = 0;
                 
                 if (bullishProb !== 'N/A') {
-                    probValue = parseFloat(bullishProb);
+                    const probValue = parseFloat(bullishProb);
                     if (probValue >= 60) {
                         probClass = 'badge-bearish';
                     } else if (probValue >= 45) {
@@ -518,7 +509,6 @@ HTML_TEMPLATE = """
                 tbody.append(row);
             });
             
-            // Initialize or reinitialize DataTable
             if (dataTable) {
                 dataTable.destroy();
             }
@@ -531,18 +521,15 @@ HTML_TEMPLATE = """
                     search: "🔍 Search:",
                     lengthMenu: "Show _MENU_ entries",
                     info: "Showing _START_ to _END_ of _TOTAL_ records",
-                    infoEmpty: "Showing 0 to 0 of 0 records",
-                    infoFiltered: "(filtered from _MAX_ total records)",
                     paginate: {
                         first: "First",
                         last: "Last",
                         next: "Next",
                         previous: "Previous"
-                    },
-                    zeroRecords: "No matching records found"
+                    }
                 },
                 columnDefs: [
-                    { orderable: false, targets: [7] } // Disable sorting on action column
+                    { orderable: false, targets: [7] }
                 ]
             });
         }
@@ -570,7 +557,7 @@ HTML_TEMPLATE = """
                         success: function(response) {
                             if (response.success) {
                                 Swal.fire('Deleted!', response.message, 'success');
-                                loadData(); // Reload data
+                                loadData();
                             } else {
                                 Swal.fire('Error!', response.message, 'error');
                             }
@@ -606,7 +593,7 @@ HTML_TEMPLATE = """
                         success: function(response) {
                             if (response.success) {
                                 Swal.fire('Deleted!', response.message, 'success');
-                                loadData(); // Reload data
+                                loadData();
                             } else {
                                 Swal.fire('Error!', response.message, 'error');
                             }
@@ -625,7 +612,8 @@ HTML_TEMPLATE = """
                 html: `
                     <div class="text-left">
                         <p>Data is automatically synced from the daily script.</p>
-                        <p><strong>Manual refresh:</strong> The daily script runs automatically and updates this database.</p>
+                        <p><strong>API Backend:</strong> FastAPI</p>
+                        <p><strong>Database:</strong> MongoDB</p>
                         <p><small class="text-muted">Last sync: ${$('#lastUpdate').text()}</small></p>
                     </div>
                 `,
@@ -645,7 +633,6 @@ HTML_TEMPLATE = """
             });
         }
         
-        // Manual refresh button (hidden feature - F5)
         $(document).keydown(function(e) {
             if (e.key === 'F5') {
                 e.preventDefault();
@@ -680,23 +667,54 @@ def get_db():
         print(f"❌ MongoDB Connection Error: {e}")
         return None
 
-# Flask Routes
-@app.route('/')
-def index():
-    """Render the main dashboard"""
-    return render_template_string(HTML_TEMPLATE)
+# FastAPI App with lifespan
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    print("🚀 FastAPI Application Starting...")
+    print(f"📅 Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    
+    # Start keep-alive thread
+    keep_alive_thread = threading.Thread(target=keep_alive, daemon=True)
+    keep_alive_thread.start()
+    print("✅ Keep-alive thread started")
+    
+    yield
+    
+    # Shutdown
+    print("🛑 FastAPI Application Shutting Down...")
 
-@app.route('/api/data')
-def get_data():
+app = FastAPI(title="Strong Ratio Signals Dashboard", 
+              description="MongoDB based dashboard for strong ratio signals",
+              version="1.0.0",
+              lifespan=lifespan)
+
+# CORS Middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Routes
+@app.get("/", response_class=HTMLResponse)
+async def index():
+    """Render the main dashboard"""
+    return HTML_TEMPLATE
+
+@app.get("/api/data")
+async def get_data():
     """Get all data from strong_ratio_signals collection"""
     db = get_db()
     if db is None:
-        return jsonify({'error': 'Database connection failed'}), 500
+        raise HTTPException(status_code=500, detail="Database connection failed")
     
     try:
         collection = db[COLLECTION_NAME]
         
-        # Get all data, sorted by date (latest first)
+        # Get all data
         data = list(collection.find({}, {'_id': 0}))
         
         # Sort by date (latest first)
@@ -706,42 +724,38 @@ def get_data():
         for idx, item in enumerate(data, 1):
             item['no'] = idx
         
-        return jsonify(data)
+        return JSONResponse(content=data)
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.route('/api/delete/<date>', methods=['DELETE'])
-def delete_by_date(date):
+@app.delete("/api/delete/{date}")
+async def delete_by_date(date: str):
     """Delete all records for a specific date"""
     db = get_db()
     if db is None:
-        return jsonify({'error': 'Database connection failed'}), 500
+        raise HTTPException(status_code=500, detail="Database connection failed")
     
     try:
         collection = db[COLLECTION_NAME]
         
-        # Delete all documents with given date
         result = collection.delete_many({'date': date})
         
         if result.deleted_count > 0:
-            return jsonify({
-                'success': True, 
+            return JSONResponse(content={
+                'success': True,
                 'message': f'✅ Deleted {result.deleted_count} record(s) for date {date}'
             })
         else:
-            return jsonify({
-                'success': False, 
-                'message': f'⚠️ No records found for date {date}'
-            }), 404
+            raise HTTPException(status_code=404, detail=f'⚠️ No records found for date {date}')
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.route('/api/delete/<date>/<rt>', methods=['DELETE'])
-def delete_by_date_and_rt(date, rt):
+@app.delete("/api/delete/{date}/{rt}")
+async def delete_by_date_and_rt(date: str, rt: str):
     """Delete a specific record by date and rt"""
     db = get_db()
     if db is None:
-        return jsonify({'error': 'Database connection failed'}), 500
+        raise HTTPException(status_code=500, detail="Database connection failed")
     
     try:
         collection = db[COLLECTION_NAME]
@@ -749,46 +763,78 @@ def delete_by_date_and_rt(date, rt):
         result = collection.delete_one({'date': date, 'rt': rt})
         
         if result.deleted_count > 0:
-            return jsonify({
-                'success': True, 
+            return JSONResponse(content={
+                'success': True,
                 'message': f'✅ Deleted record for {rt} on {date}'
             })
         else:
-            return jsonify({
-                'success': False, 
-                'message': f'⚠️ No record found for {rt} on {date}'
-            }), 404
+            raise HTTPException(status_code=404, detail=f'⚠️ No record found for {rt} on {date}')
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.route('/api/install', methods=['POST'])
-def install_data():
+@app.post("/api/install")
+async def install_data():
     """Manual data installation/refresh endpoint"""
-    return jsonify({
+    return JSONResponse(content={
         'success': True,
         'message': 'Data is automatically synced from daily script. No manual installation needed.',
         'status': 'active',
+        'backend': 'FastAPI',
         'last_sync': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     })
 
-@app.route('/health')
-def health_check():
+@app.get("/health")
+async def health_check():
     """Health check endpoint for UptimeRobot"""
     db = get_db()
     if db is None:
-        return jsonify({'status': 'unhealthy', 'mongodb': 'disconnected'}), 500
+        return JSONResponse(content={
+            'status': 'unhealthy',
+            'mongodb': 'disconnected',
+            'backend': 'FastAPI'
+        }, status_code=500)
     
     try:
         collection = db[COLLECTION_NAME]
         count = collection.count_documents({})
-        return jsonify({
+        return JSONResponse(content={
             'status': 'healthy',
             'mongodb': 'connected',
+            'backend': 'FastAPI',
             'record_count': count,
             'timestamp': datetime.now().isoformat()
         })
     except Exception as e:
-        return jsonify({'status': 'unhealthy', 'error': str(e)}), 500
+        return JSONResponse(content={
+            'status': 'unhealthy',
+            'error': str(e),
+            'backend': 'FastAPI'
+        }, status_code=500)
+
+@app.get("/api/stats")
+async def get_stats():
+    """Get statistics about the data"""
+    db = get_db()
+    if db is None:
+        raise HTTPException(status_code=500, detail="Database connection failed")
+    
+    try:
+        collection = db[COLLECTION_NAME]
+        
+        total_records = collection.count_documents({})
+        
+        # Get unique dates
+        dates = collection.distinct('date')
+        unique_dates = len(dates)
+        
+        return JSONResponse(content={
+            'total_records': total_records,
+            'unique_dates': unique_dates,
+            'dates': sorted(dates, reverse=True)[:10],  # Last 10 dates
+            'last_update': datetime.now().isoformat()
+        })
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 # Keep Alive Function for Render.com
 def keep_alive():
@@ -796,8 +842,8 @@ def keep_alive():
     time.sleep(30)  # Wait for app to start
     while True:
         try:
-            # Ping the health endpoint
-            response = requests.get('http://localhost:5000/health', timeout=5)
+            # Use requests to ping the health endpoint
+            response = requests.get('http://localhost:8000/health', timeout=5)
             if response.status_code == 200:
                 print(f"[Keep Alive] Health check passed at {datetime.now()}")
             else:
@@ -806,27 +852,25 @@ def keep_alive():
             print(f"[Keep Alive] Error: {e}")
         time.sleep(300)  # Every 5 minutes
 
-if __name__ == '__main__':
-    # Start keep-alive thread if not in production
-    import sys
-    if '--no-keep-alive' not in sys.argv:
-        keep_alive_thread = threading.Thread(target=keep_alive, daemon=True)
-        keep_alive_thread.start()
-        print("✅ Keep-alive thread started")
+# For running with uvicorn directly
+if __name__ == "__main__":
+    import uvicorn
     
-    # Get port from environment variable (Render.com uses PORT)
-    port = int(os.environ.get('PORT', 5000))
+    # Get port from environment variable
+    port = int(os.environ.get('PORT', 8000))
     
     print("=" * 60)
-    print("🚀 Strong Ratio Signals Dashboard")
+    print("🚀 Strong Ratio Signals Dashboard - FastAPI")
     print("=" * 60)
     print(f"📅 Server Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"🔗 MongoDB URI: {'Set' if MONGODB_URI else 'Not Set'}")
+    print(f"🔗 MongoDB URI: {'✓ Set' if MONGODB_URI else '✗ Not Set'}")
     print(f"🗄️  Database: {DATABASE_NAME}")
     print(f"📂 Collection: {COLLECTION_NAME}")
-    print(f"🌐 Running on: http://0.0.0.0:{port}")
+    print(f"🌐 FastAPI Server: http://0.0.0.0:{port}")
     print(f"📊 Dashboard: http://0.0.0.0:{port}/")
     print(f"❤️ Health Check: http://0.0.0.0:{port}/health")
+    print(f"📈 API Stats: http://0.0.0.0:{port}/api/stats")
+    print(f"🛠️  API Docs: http://0.0.0.0:{port}/docs")
     print("=" * 60)
     
-    app.run(debug=False, host='0.0.0.0', port=port)
+    uvicorn.run(app, host='0.0.0.0', port=port)
