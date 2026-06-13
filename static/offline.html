@@ -1,0 +1,514 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="theme-color" content="#667eea">
+    <title>Offline - Strong Ratio Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            padding: 20px;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        /* Animated background */
+        body::before {
+            content: '';
+            position: absolute;
+            width: 200%;
+            height: 200%;
+            background: radial-gradient(circle, rgba(255,255,255,0.1) 1%, transparent 1%);
+            background-size: 50px 50px;
+            animation: moveBackground 20s linear infinite;
+            opacity: 0.3;
+        }
+        
+        @keyframes moveBackground {
+            0% {
+                transform: translate(0, 0);
+            }
+            100% {
+                transform: translate(50px, 50px);
+            }
+        }
+        
+        .container {
+            position: relative;
+            z-index: 1;
+            background: white;
+            border-radius: 30px;
+            padding: 50px 40px;
+            text-align: center;
+            max-width: 500px;
+            width: 100%;
+            box-shadow: 0 30px 60px rgba(0,0,0,0.3);
+            animation: slideIn 0.6s ease-out;
+            backdrop-filter: blur(10px);
+        }
+        
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(-50px) scale(0.9);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0) scale(1);
+            }
+        }
+        
+        .icon {
+            font-size: 100px;
+            margin-bottom: 20px;
+            animation: float 3s ease-in-out infinite;
+        }
+        
+        @keyframes float {
+            0%, 100% {
+                transform: translateY(0);
+            }
+            50% {
+                transform: translateY(-10px);
+            }
+        }
+        
+        h1 {
+            color: #667eea;
+            margin-bottom: 15px;
+            font-size: 2em;
+            font-weight: bold;
+        }
+        
+        .subtitle {
+            color: #764ba2;
+            font-size: 0.9em;
+            margin-bottom: 30px;
+            font-weight: 500;
+        }
+        
+        .message-box {
+            background: #f8f9fa;
+            border-radius: 15px;
+            padding: 20px;
+            margin: 20px 0;
+            border-left: 4px solid #667eea;
+        }
+        
+        .message-box p {
+            color: #666;
+            line-height: 1.6;
+            margin: 10px 0;
+        }
+        
+        .status-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 15px;
+            padding: 15px;
+            margin: 20px 0;
+            color: white;
+        }
+        
+        .status-card .status-icon {
+            font-size: 30px;
+            display: inline-block;
+            animation: pulse 2s infinite;
+        }
+        
+        @keyframes pulse {
+            0%, 100% {
+                opacity: 1;
+            }
+            50% {
+                opacity: 0.5;
+            }
+        }
+        
+        .status-card .status-text {
+            font-size: 14px;
+            margin-top: 10px;
+        }
+        
+        button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 14px 35px;
+            border-radius: 50px;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            margin-top: 20px;
+            box-shadow: 0 5px 15px rgba(102,126,234,0.4);
+        }
+        
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(102,126,234,0.5);
+        }
+        
+        button:active {
+            transform: translateY(0);
+        }
+        
+        .countdown-container {
+            margin-top: 25px;
+            padding-top: 20px;
+            border-top: 1px solid #e0e0e0;
+        }
+        
+        .countdown-text {
+            color: #999;
+            font-size: 12px;
+            margin-bottom: 8px;
+        }
+        
+        .countdown-bar {
+            width: 100%;
+            height: 4px;
+            background: #e0e0e0;
+            border-radius: 2px;
+            overflow: hidden;
+        }
+        
+        .countdown-progress {
+            height: 100%;
+            background: linear-gradient(90deg, #667eea, #764ba2);
+            width: 100%;
+            animation: countdown 5s linear forwards;
+        }
+        
+        @keyframes countdown {
+            from {
+                width: 100%;
+            }
+            to {
+                width: 0%;
+            }
+        }
+        
+        .timer-number {
+            font-size: 18px;
+            font-weight: bold;
+            color: #667eea;
+            display: inline-block;
+            min-width: 30px;
+        }
+        
+        .suggestions {
+            margin-top: 25px;
+            text-align: left;
+            background: #f8f9fa;
+            border-radius: 15px;
+            padding: 15px;
+        }
+        
+        .suggestions h4 {
+            color: #667eea;
+            font-size: 14px;
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .suggestions ul {
+            list-style: none;
+            padding-left: 0;
+        }
+        
+        .suggestions li {
+            color: #666;
+            font-size: 12px;
+            margin: 8px 0;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        
+        .suggestions li::before {
+            content: "💡";
+        }
+        
+        .retry-count {
+            font-size: 13px;
+            color: #667eea;
+            font-weight: 500;
+        }
+        
+        @media (max-width: 480px) {
+            .container {
+                padding: 30px 20px;
+            }
+            
+            h1 {
+                font-size: 1.5em;
+            }
+            
+            .icon {
+                font-size: 70px;
+            }
+            
+            button {
+                padding: 12px 25px;
+                font-size: 14px;
+            }
+        }
+        
+        /* Dark mode support */
+        @media (prefers-color-scheme: dark) {
+            .container {
+                background: #1a1a2e;
+            }
+            
+            h1 {
+                color: #667eea;
+            }
+            
+            .message-box, .suggestions {
+                background: #16213e;
+            }
+            
+            .message-box p, .suggestions li {
+                color: #ccc;
+            }
+            
+            .countdown-container {
+                border-top-color: #333;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="icon">
+            📡
+        </div>
+        
+        <h1>You're Offline</h1>
+        <div class="subtitle">Connection Lost</div>
+        
+        <div class="message-box">
+            <p>⚠️ Unable to connect to the server</p>
+            <p style="font-size: 13px;">Please check your internet connection and try again.</p>
+        </div>
+        
+        <div class="status-card">
+            <div class="status-icon">
+                🔄
+            </div>
+            <div class="status-text">
+                Attempting to reconnect...
+            </div>
+        </div>
+        
+        <button onclick="retryConnection()">
+            🔄 Retry Now
+        </button>
+        
+        <div class="countdown-container">
+            <div class="countdown-text">
+                Auto-retry in <span class="timer-number" id="timer">5</span> seconds
+            </div>
+            <div class="countdown-bar">
+                <div class="countdown-progress" id="progressBar"></div>
+            </div>
+        </div>
+        
+        <div class="suggestions">
+            <h4>
+                <span>🔧</span> Troubleshooting Tips
+            </h4>
+            <ul>
+                <li>Check your Wi-Fi or mobile data connection</li>
+                <li>Disable VPN or proxy if enabled</li>
+                <li>Restart your router or modem</li>
+                <li>Try opening the app in a different browser</li>
+                <li>Clear browser cache and cookies</li>
+            </ul>
+        </div>
+        
+        <div class="retry-count" id="retryCount">
+            Retry attempt: <span id="attemptCount">1</span>/∞
+        </div>
+    </div>
+    
+    <script>
+        let countdown = 5;
+        let attemptCount = 1;
+        let timerInterval;
+        let retryTimeout;
+        
+        // Start countdown
+        function startCountdown() {
+            countdown = 5;
+            updateTimerDisplay();
+            
+            // Update progress bar animation
+            const progressBar = document.getElementById('progressBar');
+            if (progressBar) {
+                progressBar.style.animation = 'none';
+                progressBar.offsetHeight; // Force reflow
+                progressBar.style.animation = 'countdown 5s linear forwards';
+            }
+            
+            // Clear existing interval
+            if (timerInterval) {
+                clearInterval(timerInterval);
+            }
+            
+            // Start new interval
+            timerInterval = setInterval(() => {
+                countdown--;
+                updateTimerDisplay();
+                
+                if (countdown <= 0) {
+                    clearInterval(timerInterval);
+                    retryConnection();
+                }
+            }, 1000);
+        }
+        
+        function updateTimerDisplay() {
+            const timerElement = document.getElementById('timer');
+            if (timerElement) {
+                timerElement.textContent = countdown;
+            }
+        }
+        
+        function retryConnection() {
+            // Clear existing timeout
+            if (retryTimeout) {
+                clearTimeout(retryTimeout);
+            }
+            
+            // Update UI
+            const button = document.querySelector('button');
+            const originalText = button.innerHTML;
+            button.innerHTML = '🔄 Connecting...';
+            button.disabled = true;
+            
+            // Update status card
+            const statusCard = document.querySelector('.status-card');
+            if (statusCard) {
+                statusCard.style.opacity = '0.7';
+            }
+            
+            // Try to reload the page
+            console.log(`Retry attempt ${attemptCount}: Trying to reconnect...`);
+            
+            // Check if online
+            if (navigator.onLine) {
+                console.log('Browser reports online, attempting to reload...');
+                // Try to fetch a small resource to check real connectivity
+                fetch('/health', { 
+                    method: 'GET',
+                    headers: { 'Cache-Control': 'no-cache' },
+                    mode: 'no-cors' // This might help with CORS issues
+                })
+                .then(() => {
+                    console.log('Connection successful! Reloading...');
+                    window.location.reload();
+                })
+                .catch((error) => {
+                    console.log('Connection test failed:', error);
+                    retryFailed();
+                });
+            } else {
+                console.log('Browser reports offline');
+                retryFailed();
+            }
+            
+            function retryFailed() {
+                attemptCount++;
+                document.getElementById('attemptCount').textContent = attemptCount;
+                
+                button.innerHTML = originalText;
+                button.disabled = false;
+                
+                if (statusCard) {
+                    statusCard.style.opacity = '1';
+                }
+                
+                // Show notification if supported
+                if ('Notification' in window && Notification.permission === 'granted') {
+                    new Notification('Still Offline', {
+                        body: `Retry attempt ${attemptCount} failed. Still trying to reconnect...`,
+                        icon: '/static/icon-192x192.png'
+                    });
+                }
+                
+                startCountdown();
+            }
+        }
+        
+        // Listen for online/offline events
+        window.addEventListener('online', () => {
+            console.log('Browser reports online');
+            // Show success message
+            const container = document.querySelector('.container');
+            const originalHTML = container.innerHTML;
+            
+            // Create success overlay
+            const successDiv = document.createElement('div');
+            successDiv.style.position = 'fixed';
+            successDiv.style.top = '20px';
+            successDiv.style.left = '50%';
+            successDiv.style.transform = 'translateX(-50%)';
+            successDiv.style.background = '#28a745';
+            successDiv.style.color = 'white';
+            successDiv.style.padding = '10px 20px';
+            successDiv.style.borderRadius = '50px';
+            successDiv.style.zIndex = '1000';
+            successDiv.style.boxShadow = '0 5px 15px rgba(0,0,0,0.2)';
+            successDiv.innerHTML = '✅ Connection Restored! Reloading...';
+            document.body.appendChild(successDiv);
+            
+            setTimeout(() => {
+                window.location.reload();
+            }, 1500);
+        });
+        
+        window.addEventListener('offline', () => {
+            console.log('Browser reports offline');
+            attemptCount++;
+            document.getElementById('attemptCount').textContent = attemptCount;
+            startCountdown();
+        });
+        
+        // Request notification permission
+        if ('Notification' in window && Notification.permission === 'default') {
+            Notification.requestPermission();
+        }
+        
+        // Start the initial countdown
+        startCountdown();
+        
+        // Add offline data check
+        if ('serviceWorker' in navigator && navigator.serviceWorker.controller) {
+            navigator.serviceWorker.ready.then(registration => {
+                // Check if there's cached data
+                registration.active.postMessage({ type: 'GET_DATA' });
+            });
+        }
+        
+        // Add debug info
+        console.log('Offline page loaded at:', new Date().toISOString());
+        console.log('Browser online status:', navigator.onLine);
+        console.log('Retry attempts will continue until connection is restored');
+    </script>
+</body>
+</html>
