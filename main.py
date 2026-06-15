@@ -3,7 +3,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pymongo import MongoClient
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
 import json
 from dotenv import load_dotenv
@@ -81,11 +81,11 @@ def create_static_files():
         with open("static/manifest.json", "w") as f:
             json.dump(MANIFEST_JSON, f, indent=2)
         print("✅ Created static/manifest.json")
-        
+
         with open("static/sw.js", "w") as f:
             f.write(SERVICE_WORKER_JS)
         print("✅ Created static/sw.js")
-        
+
         with open("static/offline.html", "w") as f:
             f.write(OFFLINE_HTML)
         print("✅ Created static/offline.html")
@@ -100,7 +100,7 @@ def get_db():
     if not MONGODB_URI:
         print("❌ MONGODBEMAIL_URI not set!")
         return None
-    
+
     try:
         client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=10000)
         client.admin.command('ping')
@@ -148,6 +148,38 @@ def parse_strong_ratio(strong_str):
     except:
         return None
 
+def calculate_3day_avg_strong_ratio(collection):
+    """Calculate 3-day average strong ratio"""
+    try:
+        # Calculate date 3 days ago
+        three_days_ago = datetime.now() - timedelta(days=3)
+        
+        # Fetch records from last 3 days
+        recent_records = list(collection.find(
+            {'saved_at': {'$gte': three_days_ago}},
+            {'strong': 1, 'saved_at': 1}
+        ))
+        
+        if not recent_records:
+            return 0.0, 0
+        
+        # Calculate ratios
+        ratios = []
+        for doc in recent_records:
+            ratio = parse_strong_ratio(doc.get('strong'))
+            if ratio is not None:
+                ratios.append(ratio)
+        
+        if not ratios:
+            return 0.0, 0
+            
+        avg_ratio = sum(ratios) / len(ratios)
+        return round(avg_ratio, 2), len(ratios)
+        
+    except Exception as e:
+        print(f"Error calculating 3-day average: {e}")
+        return 0.0, 0
+
 # =========================================================
 # FASTAPI APP
 # =========================================================
@@ -156,10 +188,10 @@ async def lifespan(app: FastAPI):
     print("=" * 60)
     print("🚀 Strong Ratio Dashboard Starting...")
     print("=" * 60)
-    
-    # Test database connection (fixed: don't use bool() on database object)
+
+    # Test database connection
     db = get_db()
-    if db is not None:  # Fixed: compare with None instead of using bool()
+    if db is not None:
         try:
             collection = db[COLLECTION_NAME]
             count = collection.count_documents({})
@@ -168,7 +200,7 @@ async def lifespan(app: FastAPI):
             print(f"⚠️ Error accessing collection: {e}")
     else:
         print("⚠️ Database connection failed on startup")
-    
+
     yield
     print("🛑 Shutting down...")
 
@@ -240,6 +272,10 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
             margin: 10px 0 0;
             opacity: 0.9;
         }
+        .stats-card small {
+            font-size: 11px;
+            opacity: 0.8;
+        }
         .btn-refresh {
             background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
             color: white;
@@ -288,6 +324,18 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
             border-radius: 5px;
             font-weight: 600;
         }
+        .trend-up {
+            color: #28a745;
+            font-weight: bold;
+        }
+        .trend-down {
+            color: #dc3545;
+            font-weight: bold;
+        }
+        .trend-neutral {
+            color: #ffc107;
+            font-weight: bold;
+        }
         .table-container {
             overflow-x: auto;
             margin-top: 20px;
@@ -329,19 +377,27 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
             </div>
             
             <div class="row mb-4">
-                <div class="col-md-4 col-sm-6 mb-3">
+                <div class="col-md-3 col-sm-6 mb-3">
                     <div class="stats-card">
                         <p>📈 Total Records</p>
                         <h3 id="totalRecords">0</h3>
                     </div>
                 </div>
-                <div class="col-md-4 col-sm-6 mb-3">
+                <div class="col-md-3 col-sm-6 mb-3">
                     <div class="stats-card">
-                        <p>⭐ Avg Strong Ratio</p>
+                        <p>⭐ Overall Avg Ratio</p>
                         <h3 id="avgStrongRatio">0.00</h3>
+                        <small>All time</small>
                     </div>
                 </div>
-                <div class="col-md-4 col-sm-6 mb-3">
+                <div class="col-md-3 col-sm-6 mb-3">
+                    <div class="stats-card">
+                        <p>📅 3-Day Avg Ratio</p>
+                        <h3 id="avg3DayRatio">0.00</h3>
+                        <small id="avg3DayInfo">Last 3 days</small>
+                    </div>
+                </div>
+                <div class="col-md-3 col-sm-6 mb-3">
                     <div class="stats-card">
                         <p>🕐 Last Update</p>
                         <h3 id="lastUpdate">-</h3>
@@ -395,6 +451,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
         
         function refreshData() {
             loadData();
+            load3DayStats();
         }
         
         function loadData() {
@@ -418,6 +475,46 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
             });
         }
         
+        function load3DayStats() {
+            $.ajax({
+                url: '/api/stats/3day',
+                method: 'GET',
+                success: function(data) {
+                    if (data.avg_strong_ratio_3day > 0) {
+                        $('#avg3DayRatio').html(data.avg_strong_ratio_3day);
+                        $('#avg3DayInfo').html(`Last 3 days (${data.record_count_3day} records)`);
+                        
+                        // Show trend compared to overall average
+                        let overallAvg = parseFloat($('#avgStrongRatio').text());
+                        let threeDayAvg = parseFloat(data.avg_strong_ratio_3day);
+                        
+                        if (overallAvg > 0 && threeDayAvg > 0) {
+                            let trendIcon = '';
+                            let trendClass = '';
+                            if (threeDayAvg > overallAvg) {
+                                trendIcon = '📈';
+                                trendClass = 'trend-up';
+                            } else if (threeDayAvg < overallAvg) {
+                                trendIcon = '📉';
+                                trendClass = 'trend-down';
+                            } else {
+                                trendIcon = '➡️';
+                                trendClass = 'trend-neutral';
+                            }
+                            $('#avg3DayInfo').html(`${trendIcon} <span class="${trendClass}">${threeDayAvg > overallAvg ? '+' : ''}${(threeDayAvg - overallAvg).toFixed(2)}</span> vs overall | Last 3 days (${data.record_count_3day} records)`);
+                        }
+                    } else {
+                        $('#avg3DayRatio').html('0.00');
+                        $('#avg3DayInfo').html('No data in last 3 days');
+                    }
+                },
+                error: function() {
+                    $('#avg3DayRatio').html('0.00');
+                    $('#avg3DayInfo').html('Error loading 3-day data');
+                }
+            });
+        }
+        
         function updateStats(data) {
             document.getElementById('totalRecords').innerText = data.length;
             
@@ -435,6 +532,9 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
                 let lastDate = new Date(data[0].saved_at).toLocaleString();
                 document.getElementById('lastUpdate').innerHTML = lastDate;
             }
+            
+            // Load 3-day stats after overall stats are updated
+            load3DayStats();
         }
         
         function renderTable(data) {
@@ -516,7 +616,10 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
         
         $(document).ready(() => {
             loadData();
-            setInterval(loadData, 180000);
+            setInterval(() => {
+                loadData();
+                load3DayStats();
+            }, 180000);
         });
     </script>
 </body>
@@ -535,16 +638,16 @@ async def get_data():
     db = get_db()
     if db is None:
         raise HTTPException(500, "Database connection failed")
-    
+
     try:
         collection = db[COLLECTION_NAME]
         documents = list(collection.find({}, {'_id': 0}))
-        
+
         transformed_data = []
         for doc in documents:
             strong_ratio = parse_strong_ratio(doc.get('strong'))
             bullish_prob = calculate_bullish_probability(doc.get('bbr'))
-            
+
             transformed_data.append({
                 'rt': doc.get('rt', '-'),
                 'bbr': doc.get('bbr', 0),
@@ -553,12 +656,32 @@ async def get_data():
                 'bullish_probability': bullish_prob,
                 'saved_at': doc.get('saved_at', datetime.now().isoformat())
             })
-        
+
         print(f"✅ Retrieved {len(transformed_data)} records")
         return transformed_data
-        
+
     except Exception as e:
         print(f"❌ Error fetching data: {e}")
+        raise HTTPException(500, str(e))
+
+@app.get("/api/stats/3day")
+async def get_3day_stats():
+    """Get 3-day average strong ratio statistics"""
+    db = get_db()
+    if db is None:
+        raise HTTPException(500, "Database connection failed")
+    
+    try:
+        collection = db[COLLECTION_NAME]
+        avg_ratio, record_count = calculate_3day_avg_strong_ratio(collection)
+        
+        return {
+            'avg_strong_ratio_3day': avg_ratio,
+            'record_count_3day': record_count,
+            'timestamp': datetime.now().isoformat()
+        }
+    except Exception as e:
+        print(f"❌ Error in 3-day stats: {e}")
         raise HTTPException(500, str(e))
 
 @app.delete("/api/delete/{rt}")
@@ -567,7 +690,7 @@ async def delete_by_rt(rt: str):
     db = get_db()
     if db is None:
         raise HTTPException(500, "Database connection failed")
-    
+
     result = db[COLLECTION_NAME].delete_one({'rt': rt})
     if result.deleted_count > 0:
         return {'success': True, 'message': f'Deleted record for {rt}'}
@@ -579,7 +702,7 @@ async def health_check():
     db = get_db()
     if db is None:
         return {'status': 'unhealthy', 'mongodb': 'disconnected'}
-    
+
     try:
         count = db[COLLECTION_NAME].count_documents({})
         return {
@@ -597,22 +720,27 @@ async def get_stats():
     db = get_db()
     if db is None:
         raise HTTPException(500, "Database connection failed")
-    
+
     collection = db[COLLECTION_NAME]
     total = collection.count_documents({})
-    
+
     all_docs = list(collection.find({}, {'strong': 1}))
     ratios = []
     for doc in all_docs:
         ratio = parse_strong_ratio(doc.get('strong'))
         if ratio:
             ratios.append(ratio)
-    
+
     avg_ratio = sum(ratios) / len(ratios) if ratios else 0
-    
+
+    # Also get 3-day stats
+    three_day_avg, three_day_count = calculate_3day_avg_strong_ratio(collection)
+
     return {
         'total_records': total,
         'avg_strong_ratio': round(avg_ratio, 2),
+        'avg_strong_ratio_3day': three_day_avg,
+        'records_last_3days': three_day_count,
         'timestamp': datetime.now().isoformat()
     }
 
@@ -621,16 +749,17 @@ async def get_stats():
 # =========================================================
 if __name__ == "__main__":
     import uvicorn
-    
+
     port = int(os.environ.get('PORT', 8000))
-    
+
     print("=" * 60)
-    print("📊 STRONG RATIO SIGNALS DASHBOARD")
+    print("📊 STRONG RATIO SIGNALS DASHBOARD (with 3-Day Average)")
     print("=" * 60)
     print(f"🌐 Server: http://0.0.0.0:{port}")
     print(f"❤️ Health: http://0.0.0.0:{port}/health")
     print(f"📈 Stats: http://0.0.0.0:{port}/api/stats")
+    print(f"📊 3-Day Stats: http://0.0.0.0:{port}/api/stats/3day")
     print(f"📚 API Docs: http://0.0.0.0:{port}/docs")
     print("=" * 60)
-    
+
     uvicorn.run(app, host='0.0.0.0', port=port)
