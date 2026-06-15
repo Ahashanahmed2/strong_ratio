@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -377,30 +377,24 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
             </div>
             
             <div class="row mb-4">
-                <div class="col-md-3 col-sm-6 mb-3">
+                <div class="col-md-4 col-sm-6 mb-3">
                     <div class="stats-card">
                         <p>📈 Total Records</p>
                         <h3 id="totalRecords">0</h3>
                     </div>
                 </div>
-                <div class="col-md-3 col-sm-6 mb-3">
+                <div class="col-md-4 col-sm-6 mb-3">
                     <div class="stats-card">
                         <p>⭐ Overall Avg Ratio</p>
                         <h3 id="avgStrongRatio">0.00</h3>
                         <small>All time</small>
                     </div>
                 </div>
-                <div class="col-md-3 col-sm-6 mb-3">
+                <div class="col-md-4 col-sm-6 mb-3">
                     <div class="stats-card">
                         <p>📅 3-Day Avg Ratio</p>
                         <h3 id="avg3DayRatio">0.00</h3>
-                        <small id="avg3DayInfo">Last 3 days</small>
-                    </div>
-                </div>
-                <div class="col-md-3 col-sm-6 mb-3">
-                    <div class="stats-card">
-                        <p>🕐 Last Update</p>
-                        <h3 id="lastUpdate">-</h3>
+                        <small id="avg3DayInfo">Calculating...</small>
                     </div>
                 </div>
             </div>
@@ -477,32 +471,20 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
         
         function load3DayStats() {
             $.ajax({
-                url: '/api/stats/3day',
+                url: '/api/3day-avg',
                 method: 'GET',
                 success: function(data) {
                     if (data.avg_strong_ratio_3day > 0) {
                         $('#avg3DayRatio').html(data.avg_strong_ratio_3day);
-                        $('#avg3DayInfo').html(`Last 3 days (${data.record_count_3day} records)`);
                         
-                        // Show trend compared to overall average
-                        let overallAvg = parseFloat($('#avgStrongRatio').text());
-                        let threeDayAvg = parseFloat(data.avg_strong_ratio_3day);
-                        
-                        if (overallAvg > 0 && threeDayAvg > 0) {
-                            let trendIcon = '';
-                            let trendClass = '';
-                            if (threeDayAvg > overallAvg) {
-                                trendIcon = '📈';
-                                trendClass = 'trend-up';
-                            } else if (threeDayAvg < overallAvg) {
-                                trendIcon = '📉';
-                                trendClass = 'trend-down';
-                            } else {
-                                trendIcon = '➡️';
-                                trendClass = 'trend-neutral';
-                            }
-                            $('#avg3DayInfo').html(`${trendIcon} <span class="${trendClass}">${threeDayAvg > overallAvg ? '+' : ''}${(threeDayAvg - overallAvg).toFixed(2)}</span> vs overall | Last 3 days (${data.record_count_3day} records)`);
+                        let trendHtml = '';
+                        if (data.overall_avg > 0 && data.trend) {
+                            let trendClass = data.trend === 'up' ? 'trend-up' : (data.trend === 'down' ? 'trend-down' : 'trend-neutral');
+                            let trendIcon = data.trend === 'up' ? '📈' : (data.trend === 'down' ? '📉' : '➡️');
+                            trendHtml = `<br><small class="${trendClass}">${trendIcon} ${data.change_vs_overall} vs overall</small>`;
                         }
+                        
+                        $('#avg3DayInfo').html(`Last 3 days (${data.record_count_3day} records)${trendHtml}`);
                     } else {
                         $('#avg3DayRatio').html('0.00');
                         $('#avg3DayInfo').html('No data in last 3 days');
@@ -664,24 +646,52 @@ async def get_data():
         print(f"❌ Error fetching data: {e}")
         raise HTTPException(500, str(e))
 
-@app.get("/api/stats/3day")
-async def get_3day_stats():
-    """Get 3-day average strong ratio statistics"""
+@app.get("/api/3day-avg")
+async def get_3day_average():
+    """Get 3-day average strong ratio with trend analysis"""
     db = get_db()
     if db is None:
         raise HTTPException(500, "Database connection failed")
     
     try:
         collection = db[COLLECTION_NAME]
-        avg_ratio, record_count = calculate_3day_avg_strong_ratio(collection)
+        
+        # Calculate 3-day average
+        three_day_avg, record_count = calculate_3day_avg_strong_ratio(collection)
+        
+        # Calculate overall average for comparison
+        all_docs = list(collection.find({}, {'strong': 1}))
+        all_ratios = []
+        for doc in all_docs:
+            ratio = parse_strong_ratio(doc.get('strong'))
+            if ratio is not None:
+                all_ratios.append(ratio)
+        
+        overall_avg = round(sum(all_ratios) / len(all_ratios), 2) if all_ratios else 0
+        
+        # Calculate trend
+        trend = 'neutral'
+        change_vs_overall = 0
+        if three_day_avg > 0 and overall_avg > 0:
+            change_vs_overall = round(three_day_avg - overall_avg, 2)
+            if change_vs_overall > 0:
+                trend = 'up'
+            elif change_vs_overall < 0:
+                trend = 'down'
+            else:
+                trend = 'neutral'
         
         return {
-            'avg_strong_ratio_3day': avg_ratio,
+            'avg_strong_ratio_3day': three_day_avg,
             'record_count_3day': record_count,
+            'overall_avg': overall_avg,
+            'trend': trend,
+            'change_vs_overall': f"{'+' if change_vs_overall > 0 else ''}{change_vs_overall}",
             'timestamp': datetime.now().isoformat()
         }
+        
     except Exception as e:
-        print(f"❌ Error in 3-day stats: {e}")
+        print(f"❌ Error in 3-day average: {e}")
         raise HTTPException(500, str(e))
 
 @app.delete("/api/delete/{rt}")
@@ -745,6 +755,37 @@ async def get_stats():
     }
 
 # =========================================================
+# HEAD ROUTES FOR MONITORING
+# =========================================================
+@app.head("/")
+async def head_index():
+    """HEAD request for main dashboard"""
+    return Response(status_code=200)
+
+@app.head("/api/data")
+async def head_data():
+    """HEAD request for data API"""
+    return Response(status_code=200)
+
+@app.head("/api/3day-avg")
+async def head_3day_avg():
+    """HEAD request for 3-day average endpoint"""
+    return Response(status_code=200)
+
+@app.head("/health")
+async def head_health():
+    """HEAD request for health check"""
+    db = get_db()
+    if db is None:
+        return Response(status_code=503)
+    return Response(status_code=200)
+
+@app.head("/api/stats")
+async def head_stats():
+    """HEAD request for stats endpoint"""
+    return Response(status_code=200)
+
+# =========================================================
 # MAIN
 # =========================================================
 if __name__ == "__main__":
@@ -758,7 +799,7 @@ if __name__ == "__main__":
     print(f"🌐 Server: http://0.0.0.0:{port}")
     print(f"❤️ Health: http://0.0.0.0:{port}/health")
     print(f"📈 Stats: http://0.0.0.0:{port}/api/stats")
-    print(f"📊 3-Day Stats: http://0.0.0.0:{port}/api/stats/3day")
+    print(f"📊 3-Day Avg: http://0.0.0.0:{port}/api/3day-avg")
     print(f"📚 API Docs: http://0.0.0.0:{port}/docs")
     print("=" * 60)
 
