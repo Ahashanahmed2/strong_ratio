@@ -7,9 +7,6 @@ from datetime import datetime, timedelta
 import os
 import json
 from dotenv import load_dotenv
-import threading
-import time
-import requests
 from contextlib import asynccontextmanager
 
 load_dotenv()
@@ -28,7 +25,6 @@ os.makedirs("static", exist_ok=True)
 # DEFINE STATIC FILES CONTENT
 # =========================================================
 
-# 1. manifest.json
 MANIFEST_JSON = {
     "name": "Strong Ratio Signals Dashboard",
     "short_name": "Strong Ratio",
@@ -46,7 +42,6 @@ MANIFEST_JSON = {
     ]
 }
 
-# 2. Service Worker (simplified)
 SERVICE_WORKER_JS = '''// Simple service worker for offline support
 const CACHE_NAME = 'strong-ratio-v1';
 
@@ -65,7 +60,6 @@ self.addEventListener('fetch', event => {
 });
 '''
 
-# 3. Offline HTML
 OFFLINE_HTML = '''<!DOCTYPE html>
 <html>
 <head><title>Offline</title></head>
@@ -143,7 +137,7 @@ def parse_strong_ratio(strong_str):
                 numerator = float(parts[0])
                 denominator = float(parts[1])
                 if denominator > 0:
-                    return numerator / denominator
+                    return round(numerator / denominator, 2)
         return None
     except:
         return None
@@ -151,10 +145,8 @@ def parse_strong_ratio(strong_str):
 def calculate_3day_avg_strong_ratio(collection):
     """Calculate 3-day average strong ratio"""
     try:
-        # Calculate date 3 days ago
         three_days_ago = datetime.now() - timedelta(days=3)
         
-        # Fetch records from last 3 days
         recent_records = list(collection.find(
             {'saved_at': {'$gte': three_days_ago}},
             {'strong': 1, 'saved_at': 1}
@@ -163,7 +155,6 @@ def calculate_3day_avg_strong_ratio(collection):
         if not recent_records:
             return 0.0, 0
         
-        # Calculate ratios
         ratios = []
         for doc in recent_records:
             ratio = parse_strong_ratio(doc.get('strong'))
@@ -189,13 +180,17 @@ async def lifespan(app: FastAPI):
     print("🚀 Strong Ratio Dashboard Starting...")
     print("=" * 60)
 
-    # Test database connection
     db = get_db()
     if db is not None:
         try:
             collection = db[COLLECTION_NAME]
             count = collection.count_documents({})
             print(f"📊 Found {count} records in database")
+            
+            # Show sample data
+            sample = collection.find_one()
+            if sample:
+                print(f"📝 Sample record: {sample}")
         except Exception as e:
             print(f"⚠️ Error accessing collection: {e}")
     else:
@@ -204,13 +199,11 @@ async def lifespan(app: FastAPI):
     yield
     print("🛑 Shutting down...")
 
-# Create static files before app initialization
 create_static_files()
 
 app = FastAPI(title="Strong Ratio Dashboard", version="1.0.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
-# Mount static files
 try:
     app.mount("/static", StaticFiles(directory="static"), name="static")
     print("✅ Static files mounted")
@@ -218,7 +211,7 @@ except Exception as e:
     print(f"⚠️ Error mounting static files: {e}")
 
 # =========================================================
-# HTML TEMPLATE
+# HTML TEMPLATE (FIXED VERSION)
 # =========================================================
 HTML_TEMPLATE = '''<!DOCTYPE html>
 <html lang="en">
@@ -352,6 +345,10 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
             text-align: center;
             vertical-align: middle;
         }
+        .loading {
+            text-align: center;
+            padding: 50px;
+        }
         @media (max-width: 768px) {
             .container-main {
                 padding: 15px;
@@ -418,9 +415,10 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
                         </tr>
                     </thead>
                     <tbody>
-                        <tr class="text-center">
+                        <tr class="loading">
                             <td colspan="8">
-                                <div class="spinner-border text-primary"></div><br>Loading...
+                                <div class="spinner-border text-primary"></div><br>
+                                Loading data...
                             </td>
                         </tr>
                     </tbody>
@@ -449,24 +447,41 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
         }
         
         function loadData() {
+            console.log("Loading data...");
             $.ajax({
                 url: '/api/data',
                 method: 'GET',
                 timeout: 30000,
-                success: function(data) {
-                    if (data.error) {
-                        showError(data.error);
+                success: function(response) {
+                    console.log("Data received:", response);
+                    if (response.error) {
+                        showError(response.error);
                         return;
                     }
-                    updateStats(data);
-                    renderTable(data);
+                    if (Array.isArray(response) && response.length > 0) {
+                        updateStats(response);
+                        renderTable(response);
+                    } else {
+                        console.log("No data found");
+                        showNoData();
+                    }
                     document.getElementById('refreshTime').innerText = new Date().toLocaleTimeString();
                 },
                 error: function(xhr, status, error) {
-                    console.error('Error:', error);
+                    console.error('Error:', error, xhr.responseText);
                     showError('Failed to load data: ' + error);
+                    showNoData();
                 }
             });
+        }
+        
+        function showNoData() {
+            const tbody = $('#dataTable tbody');
+            tbody.html('<tr><td colspan="8" class="text-center">No data available in database</td></tr>');
+            if (dataTable) dataTable.destroy();
+            dataTable = null;
+            document.getElementById('totalRecords').innerText = '0';
+            document.getElementById('avgStrongRatio').innerHTML = '0.00';
         }
         
         function load3DayStats() {
@@ -474,23 +489,17 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
                 url: '/api/3day-avg',
                 method: 'GET',
                 success: function(data) {
+                    console.log("3-day stats:", data);
                     if (data.avg_strong_ratio_3day > 0) {
-                        $('#avg3DayRatio').html(data.avg_strong_ratio_3day);
-                        
-                        let trendHtml = '';
-                        if (data.overall_avg > 0 && data.trend) {
-                            let trendClass = data.trend === 'up' ? 'trend-up' : (data.trend === 'down' ? 'trend-down' : 'trend-neutral');
-                            let trendIcon = data.trend === 'up' ? '📈' : (data.trend === 'down' ? '📉' : '➡️');
-                            trendHtml = `<br><small class="${trendClass}">${trendIcon} ${data.change_vs_overall} vs overall</small>`;
-                        }
-                        
-                        $('#avg3DayInfo').html(`Last 3 days (${data.record_count_3day} records)${trendHtml}`);
+                        $('#avg3DayRatio').html(data.avg_strong_ratio_3day.toFixed(2));
+                        $('#avg3DayInfo').html(`Last 3 days (${data.record_count_3day} records) | Trend: ${data.trend}`);
                     } else {
                         $('#avg3DayRatio').html('0.00');
                         $('#avg3DayInfo').html('No data in last 3 days');
                     }
                 },
-                error: function() {
+                error: function(err) {
+                    console.error("3-day stats error:", err);
                     $('#avg3DayRatio').html('0.00');
                     $('#avg3DayInfo').html('Error loading 3-day data');
                 }
@@ -502,34 +511,31 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
             
             let totalRatio = 0, ratioCount = 0;
             data.forEach(d => {
-                if (d.strong_ratio && !isNaN(d.strong_ratio)) {
+                if (d.strong_ratio && !isNaN(parseFloat(d.strong_ratio))) {
                     totalRatio += parseFloat(d.strong_ratio);
                     ratioCount++;
                 }
             });
             let avgRatio = ratioCount > 0 ? (totalRatio / ratioCount).toFixed(2) : '0.00';
             document.getElementById('avgStrongRatio').innerHTML = avgRatio;
-            
-            if (data.length > 0 && data[0].saved_at) {
-                let lastDate = new Date(data[0].saved_at).toLocaleString();
-                document.getElementById('lastUpdate').innerHTML = lastDate;
-            }
-            
-            // Load 3-day stats after overall stats are updated
-            load3DayStats();
         }
         
         function renderTable(data) {
             const tbody = $('#dataTable tbody');
             tbody.empty();
             
-            if (data.length === 0) {
+            if (!data || data.length === 0) {
                 tbody.html('<tr><td colspan="8" class="text-center">No data available</td></tr>');
                 if (dataTable) dataTable.destroy();
                 return;
             }
             
-            data.sort((a,b) => new Date(b.saved_at) - new Date(a.saved_at));
+            // Sort by saved_at descending
+            data.sort((a, b) => {
+                if (!a.saved_at) return 1;
+                if (!b.saved_at) return -1;
+                return new Date(b.saved_at) - new Date(a.saved_at);
+            });
             
             data.forEach((item, idx) => {
                 let strongRatioDisplay = item.strong_ratio ? parseFloat(item.strong_ratio).toFixed(2) : '-';
@@ -544,28 +550,39 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
                 }
                 
                 let savedDate = item.saved_at ? new Date(item.saved_at).toLocaleString() : '-';
+                let rtValue = item.rt || '-';
+                let bbrValue = item.bbr ? parseFloat(item.bbr).toFixed(2) : '-';
+                let strongValue = item.strong || '-';
                 
                 let row = `
                     <tr>
                         <td><strong>${idx + 1}</strong></td>
-                        <td><code>${item.rt || '-'}</code></td>
-                        <td>${item.bbr ? item.bbr.toFixed(2) : '-'}</td>
-                        <td>${item.strong || '-'}</td>
+                        <td><code>${rtValue}</code></td>
+                        <td>${bbrValue}</td>
+                        <td>${strongValue}</td>
                         <td><strong>${strongRatioDisplay}</strong></td>
                         <td><span class="${bullishClass}">${bullishText}</span></td>
                         <td><small>${savedDate}</small></td>
-                        <td><button class="btn-delete" onclick="deleteRecord('${item.rt}')">🗑️ Delete</button></td>
+                        <td><button class="btn-delete" onclick="deleteRecord('${rtValue.replace(/'/g, "\\'")}')">🗑️ Delete</button></td>
                     </tr>
                 `;
                 tbody.append(row);
             });
             
-            if (dataTable) dataTable.destroy();
+            // Initialize DataTable
+            if (dataTable) {
+                dataTable.destroy();
+            }
             dataTable = $('#dataTable').DataTable({
                 pageLength: 25,
                 responsive: true,
                 order: [[6, 'desc']],
-                columnDefs: [{ orderable: false, targets: [7] }]
+                columnDefs: [
+                    { orderable: false, targets: [7] }
+                ],
+                language: {
+                    emptyTable: "No data available in table"
+                }
             });
         }
         
@@ -577,16 +594,19 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
                 showCancelButton: true,
                 confirmButtonColor: '#dc3545',
                 confirmButtonText: 'Delete'
-            }).then(result => {
+            }).then((result) => {
                 if (result.isConfirmed) {
                     $.ajax({
                         url: `/api/delete/${encodeURIComponent(rt)}`,
                         method: 'DELETE',
-                        success: res => {
+                        success: function(res) {
                             Swal.fire('Deleted!', res.message, 'success');
                             loadData();
+                            load3DayStats();
                         },
-                        error: () => Swal.fire('Error!', 'Delete failed', 'error')
+                        error: function() {
+                            Swal.fire('Error!', 'Delete failed', 'error');
+                        }
                     });
                 }
             });
@@ -597,7 +617,9 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
         }
         
         $(document).ready(() => {
+            console.log("Document ready, loading data...");
             loadData();
+            load3DayStats();
             setInterval(() => {
                 loadData();
                 load3DayStats();
@@ -624,22 +646,29 @@ async def get_data():
     try:
         collection = db[COLLECTION_NAME]
         documents = list(collection.find({}, {'_id': 0}))
+        
+        print(f"Found {len(documents)} documents in MongoDB")
 
         transformed_data = []
         for doc in documents:
             strong_ratio = parse_strong_ratio(doc.get('strong'))
             bullish_prob = calculate_bullish_probability(doc.get('bbr'))
-
-            transformed_data.append({
+            
+            transformed_item = {
                 'rt': doc.get('rt', '-'),
                 'bbr': doc.get('bbr', 0),
                 'strong': doc.get('strong', '-'),
                 'strong_ratio': strong_ratio,
                 'bullish_probability': bullish_prob,
                 'saved_at': doc.get('saved_at', datetime.now().isoformat())
-            })
+            }
+            transformed_data.append(transformed_item)
+            
+            # Debug first item
+            if len(transformed_data) == 1:
+                print(f"First transformed item: {transformed_item}")
 
-        print(f"✅ Retrieved {len(transformed_data)} records")
+        print(f"✅ Returning {len(transformed_data)} records")
         return transformed_data
 
     except Exception as e:
@@ -656,10 +685,9 @@ async def get_3day_average():
     try:
         collection = db[COLLECTION_NAME]
         
-        # Calculate 3-day average
         three_day_avg, record_count = calculate_3day_avg_strong_ratio(collection)
         
-        # Calculate overall average for comparison
+        # Calculate overall average
         all_docs = list(collection.find({}, {'strong': 1}))
         all_ratios = []
         for doc in all_docs:
@@ -671,22 +699,17 @@ async def get_3day_average():
         
         # Calculate trend
         trend = 'neutral'
-        change_vs_overall = 0
         if three_day_avg > 0 and overall_avg > 0:
-            change_vs_overall = round(three_day_avg - overall_avg, 2)
-            if change_vs_overall > 0:
+            if three_day_avg > overall_avg:
                 trend = 'up'
-            elif change_vs_overall < 0:
+            elif three_day_avg < overall_avg:
                 trend = 'down'
-            else:
-                trend = 'neutral'
         
         return {
             'avg_strong_ratio_3day': three_day_avg,
             'record_count_3day': record_count,
             'overall_avg': overall_avg,
             'trend': trend,
-            'change_vs_overall': f"{'+' if change_vs_overall > 0 else ''}{change_vs_overall}",
             'timestamp': datetime.now().isoformat()
         }
         
@@ -742,8 +765,6 @@ async def get_stats():
             ratios.append(ratio)
 
     avg_ratio = sum(ratios) / len(ratios) if ratios else 0
-
-    # Also get 3-day stats
     three_day_avg, three_day_count = calculate_3day_avg_strong_ratio(collection)
 
     return {
@@ -759,22 +780,18 @@ async def get_stats():
 # =========================================================
 @app.head("/")
 async def head_index():
-    """HEAD request for main dashboard"""
     return Response(status_code=200)
 
 @app.head("/api/data")
 async def head_data():
-    """HEAD request for data API"""
     return Response(status_code=200)
 
 @app.head("/api/3day-avg")
 async def head_3day_avg():
-    """HEAD request for 3-day average endpoint"""
     return Response(status_code=200)
 
 @app.head("/health")
 async def head_health():
-    """HEAD request for health check"""
     db = get_db()
     if db is None:
         return Response(status_code=503)
@@ -782,7 +799,6 @@ async def head_health():
 
 @app.head("/api/stats")
 async def head_stats():
-    """HEAD request for stats endpoint"""
     return Response(status_code=200)
 
 # =========================================================
@@ -794,7 +810,7 @@ if __name__ == "__main__":
     port = int(os.environ.get('PORT', 8000))
 
     print("=" * 60)
-    print("📊 STRONG RATIO SIGNALS DASHBOARD (with 3-Day Average)")
+    print("📊 STRONG RATIO SIGNALS DASHBOARD (FIXED VERSION)")
     print("=" * 60)
     print(f"🌐 Server: http://0.0.0.0:{port}")
     print(f"❤️ Health: http://0.0.0.0:{port}/health")
